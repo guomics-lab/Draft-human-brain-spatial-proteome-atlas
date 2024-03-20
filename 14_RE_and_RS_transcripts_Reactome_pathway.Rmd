@@ -1,0 +1,141 @@
+---
+title: "Reactome enrichment analysis in RE and RS transcripts"
+author: "Yuting Xie"
+date: "2023-08-03"
+output: html_document
+---
+
+```{r}
+rm(list = ls())
+pacman::p_load(readxl,magrittr, clusterProfiler,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,reshape2, preprocessCore, data.table)
+
+# BiocManager::install("reactome.db")
+library(reactome.db)
+# BiocManager::install('ReactomePA',force = TRUE)
+library(ReactomePA)
+library(clusterProfiler)
+#https://www.jianshu.com/p/a195bfe30d9e
+library(org.Hs.eg.db)
+```
+
+#The input gene ID should be Entrez gene ID. We recommend using [`clusterProfiler::bitr()`](#bitr) to convert biological IDs. 
+
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+info <- data.table::fread("FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv",data.table = F)
+
+info <- info[order(info$Order),]
+info1 <- data.frame(BBA=info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions, Lobe=info$Lobe, Gyrus=info$Gyrus, order=info$Order)
+info2 <- unique(info1)
+info2 <- info2[-which(info2$BBA=="#N/A"), ]
+
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Transcripts")
+RNA_info <- data.table::fread("Info_Allen_mRNA_sub_matrix_9162prot_2113sample20220920.csv",data.table = F)
+region <- unique(RNA_info$region_matchName)
+region <- region[-which(region=="#N/A")]
+region_order <- info2[match(region, info2$BBA), ]
+
+ts <- data.table::fread("HBA_Allen_ts_18415prot_2113sample_Gray_BBA_3_2_2.5_20221011.csv",data.table = F)
+ts <- data.frame(ts,row.names = "V1")
+ts <- ts[region_order$BBA, ]
+
+allpathway <- NULL
+top10 <- NULL
+for(i in 1:nrow(ts)){
+  gene_symbol <- unique(colnames(ts)[!is.na(ts[i,])])
+  gene <- select(org.Hs.eg.db, keys=gene_symbol,
+                 keytype="SYMBOL",
+                 columns = "ENTREZID")
+  no_map <- sort(as.character(gene[is.na(gene$ENTREZID),'SYMBOL']))
+  if(length(no_map)>0){
+  uni_alias <- mapIds(org.Hs.eg.db, keys = no_map, column = 'SYMBOL', keytype = 'ALIAS', multiVals = 'filter')
+  alias_symbol_id <- select(org.Hs.eg.db, keys = uni_alias, columns = 'ENTREZID', keytype = 'SYMBOL')
+  res <- rbind(gene[!is.na(gene$ENTREZID),], alias_symbol_id)} else {
+  res <- gene[!is.na(gene$ENTREZID),]
+  }
+  pathway1 <- enrichPathway(gene=res$ENTREZID, 
+                          organism = "human",
+                          pvalueCutoff = 0.05, 
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.2,
+                          readable=FALSE)
+  pathway2 <- pathway1@result[1:10,]  #top 10
+  pathway2$BBA <- rownames(ts)[i]
+  top10 <- rbind(top10, pathway2)
+  
+  allpath <- pathway1@result
+  allpath$BBA <- rownames(ts)[i]
+  allpathway <- rbind(allpathway, allpath)
+}
+
+top10 <- top10[!is.na(top10$ID), ]
+top10 <- merge(top10, region_order, by="BBA", all=T)
+top10$GeneRatio1 <- as.numeric(sapply(top10$GeneRatio,function(x){str_split(x,"/")[[1]][1]}))/as.numeric(sapply(top10$GeneRatio,function(x){str_split(x,"/")[[1]][2]}))
+
+allpathway1 <- merge(allpathway, region_order, by="BBA", all=T)
+allpathway1$GeneRatio1 <- as.numeric(sapply(allpathway1$GeneRatio,function(x){str_split(x,"/")[[1]][1]}))/as.numeric(sapply(allpathway1$GeneRatio,function(x){str_split(x,"/")[[1]][2]}))
+
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Transcripts")
+write.csv(top10, "transcripts_Top10_pathways_in_114_region.csv")
+write.csv(allpathway1, "transcripts_all_pathways_in_114_region.csv")
+```
+
+#select proteins pathways: p value < 0.01 in top10 pathways
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Transcripts")
+top10 <- read.csv("transcripts_Top10_pathways_in_114_region.csv")
+pathway <- top10[which(top10$pvalue<0.01), ]
+length(unique(pathway$Description)) # 181 pathways
+
+write.csv(pathway, "transcripts_p_value_less_0.01_pathways_in_top10_pathways.csv")
+```
+
+
+#figures
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Transcripts")
+pathway1 <- read.csv("transcripts_p_value_less_0.01_pathways_in_top10_pathways.csv")
+pathway1 <- pathway1[, -c(1,2)]
+SP <- read.csv("selected_46pathways_RNA_reactome.csv", header = FALSE)
+
+library(forcats)
+pathway1 <- pathway1[order(pathway1$Lobe), ]
+pathway2 <- pathway1[unlist(sapply(SP$V1, function(x){which(pathway1$Description==x)})),]
+pathway3 <- pathway2[order(pathway2$order),]
+pathway3$BBA <- fct_inorder(as.factor(pathway3$BBA))
+
+pathway4 <- pathway2[,c(1,3,6)]
+pathway4 <- reshape2::dcast(pathway4, Description~BBA, value.var = "pvalue")
+rownames(pathway4) <- pathway4$Description
+pathway4 <- pathway4[,-1]
+pathway4[is.na(pathway4)] <- 0
+pathway4.clust<-hclust(dist(pathway4))
+
+library("ggtree")
+p2 <- ggtree(pathway4.clust)+
+    geom_tiplab()
+
+p1 <- ggplot(pathway3, aes(x=BBA, y=Description)) +
+  geom_point(aes(color = Lobe, size = -log10(pvalue)))+theme_bw()+ #GeneRatio1
+  theme(#panel.grid = element_blank(),
+        axis.text.x=element_text(angle=90, hjust = 1, vjust=0.5, size=5),
+        axis.text.y=element_text(size=5))+
+  scale_color_manual(values=c(Cerebellum = "#eb7369", FrontalLobe = "#c5920e", LimbicLobe = "#2eb064" , OccipitalLobe = "#1cb4b8", ParietalLobe = "#359cd8", SubcorticalNuclei = "#a07db7", TemporalLobe = "#d469a4"))+
+  # scale_color_gradient(low='#6699CC',high='#CC3333')+
+  labs(x=NULL,y=NULL, title="RNA_p.value_0.01_in_top10_46_selet_pathways")+guides(size=guide_legend(order=1))
+  # insert_top(pathway2$Gyrus, height=.1)
+
+library(aplot)
+p1%>%
+  insert_right(p2, width = 0.1)
+
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Transcripts")
+ggsave("46seleted_pathways_from_pavalue_0.01_in_top10_pathways_62BBA_Lobe_pvalue.pdf", width=16, height=10)
+```
+
+

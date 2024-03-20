@@ -1,0 +1,547 @@
+```{r}
+rm(list = ls())
+pacman::p_load(readxl,magrittr,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,reshape2,preprocessCore,data.table)
+```
+#-----------------------
+#normolized pro matrix-without epilepsy & isoform
+#-----------------------
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+datExpr0 <- data.table::fread('HBA_prot_matrix_11746pros_2824samples_202200909.csv', stringsAsFactors = F, data.table = F, fill = T)
+datExpr0 <- data.frame(datExpr0, row.names = "V1")
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+df_nor<-data.table::fread('HBA_prot_matrix_normolized_20220811.csv',data.table = F)
+rownames(df_nor)<-df_nor[,1]
+df_nor1<-df_nor[,-1]
+
+datExpr1<-as.data.frame(t(datExpr0))
+datExpr1<-datExpr1[, colnames(df_nor1)]
+
+datExpr1$pathology<-info$pathology[match(rownames(datExpr1),info$sample)]
+datExpr2<-datExpr1[grep("health",datExpr1$pathology),]
+datExpr2<-datExpr2[,-ncol(datExpr2)]
+
+datExpr3<-datExpr2[,apply(datExpr2,2,function(x){sum(!is.na(x))>0})]
+
+df_nor1<-df_nor1[rownames(datExpr3),colnames(datExpr3)]
+
+df_nor1<-as.data.frame(t(df_nor1))
+df_nor1$pro<-sapply(rownames(df_nor1),function(x){str_split(x,"-")[[1]][1]})
+df_nor2<-reshape2::melt(df_nor1,id="pro")
+df_nor3<-reshape2::acast(df_nor2, pro~variable, mean, na.rm=T)
+
+datExpr<-as.data.frame(t(df_nor3))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix")
+dir.create(path=paste0("dataExpression") ,recursive = TRUE)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/dataExpression")
+save(datExpr, file = "datExpr_2581Health_sample_9218pro.RData")
+```
+#-------------------------
+# Grey and white matter
+#-------------------------
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/dataExpression")
+load(file = "datExpr_2581Health_sample_9218pro.RData")
+datExpression<-datExpr
+
+datCor<-cor(t(datExpression), use = "pairwise.complete.obs", method = "pearson")
+datDist<-sqrt(1-datCor^2) 
+```
+
+#-------------------------
+# Grey mater select pro
+#-------------------------
+#delet NA  delet White matter or Grey matter
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+load(file="datExpr6_row2581_coL10973.RData")
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+datExpr6$matter<-info$W_G[match(rownames(datExpr6),info$sample)]
+datExpr6<-datExpr6[grep("W", datExpr6$matter),]  #G
+datExpr6<-datExpr6[,-ncol(datExpr6)]
+
+# percentNA<-c(0.1,0.5,0.9)
+# i=1
+# datExpr7<-datExpr6[,apply(datExpr6,2,function(x){sum(!is.na(x))>percentNA[i]*nrow(datExpr6)})]
+datExpr7<-datExpr6[,apply(datExpr6,2,function(x){sum(!is.na(x))>0})]
+
+#考虑按脑区删NA 只要蛋白在50%以上脑区中都鉴定到则留下来
+datExpr7$BBA<-info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datExpr7),info$sample)]
+table(datExpr7$BBA)
+datExpr8<-reshape2::melt(datExpr7,id="BBA")
+datExpr9<-reshape2::acast(datExpr8, BBA~variable, mean, na.rm=T)
+datExpr10<-as.data.frame(datExpr9[,apply(datExpr9, 2, function(x){sum(!is.na(x))>0.5*nrow(datExpr9)})])
+datExpr11<-datExpr7[,colnames(datExpr10)]
+# NARatio<-apply(datExpr11,2,function(x){sum(!is.na(x))/nrow(datExpr11)})
+# summary(NARatio)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+save(datExpr11, file = "datExpr11_W_row1060_coL6179_after_delet_NA_by_BBA.RData")
+```
+# FC and t-test by 2pairs BBA
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+load(file="datExpr11_W_row1060_coL6179_after_delet_NA_by_BBA.RData")
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+datFC<-as.data.frame(t(datExpr11)) #has been log2
+
+minR <- as.numeric(min(datFC,na.rm = T)) 
+datFC1 <- data.frame(datFC,rNA=rowSums(is.na(datFC)))
+
+datFC[is.na(datFC)] <- 0.5*minR+runif(sum(datFC1$rNA),-1,1)
+datFC<-as.data.frame(t(datFC))
+
+datFC$BBA<-info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datFC),info$sample)]
+region<-unique(datFC$BBA)
+
+library(foreach)
+library(doParallel)
+cl <- makeCluster(2)
+registerDoParallel(cl)
+
+Log2FC<-foreach(i=1:length(region),.combine=rbind) %:%
+    foreach(j=1:length(region),.combine=rbind) %dopar% {
+    
+    data1<-datFC[which(datFC$BBA==region[i]),-ncol(datFC)]
+    data2<-datFC[which(datFC$BBA==region[j]),-ncol(datFC)]
+    
+    data_mean1 <- apply(data1,2,function(x){mean(as.numeric(x))})
+    data_mean2 <- apply(data2,2,function(x){mean(as.numeric(x))})
+    
+    FC0 <- t(as.data.frame(data_mean1-data_mean2))
+    
+    rownames(FC0)<-paste(region[i],region[j],sep="_X_")
+    
+    return(FC0)
+  }
+pacman::p_load(magrittr)
+abs_Log2FC<-abs(Log2FC) %>% as.data.frame()
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+save(abs_Log2FC, file = "W_matter_abs_Log2FC.RData")
+
+datT<-foreach(i=1:length(region),.combine=rbind) %:%
+        foreach(j=1:length(region),.combine=rbind) %dopar% {
+    
+        t1<-datFC[c(which(datFC$BBA==region[i]),which(datFC$BBA==region[j])),]
+        
+        pval<-sapply(c(1:(ncol(t1)-1)),function(x){
+              p<-try(t.test(t1[,x]~t1$BBA),silent=TRUE)
+              if(is(p,"try-error")) {NA} else {p$p.value}
+              })
+        
+        t2 <- t(as.data.frame(pval))
+        rownames(t2)<-paste(region[i],region[j],sep="_X_")
+        return(t2)
+  }
+datT<-as.data.frame(datT)
+colnames(datT)<-colnames(datFC)[-ncol(datFC)]
+
+datAdjT<-as.data.frame(t(apply(datT,1,function(x){p.adjust(x,method = "BH")})))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+save(datAdjT, file = "M_matter_datAdjT.RData")
+
+```
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+load(file = "W_matter_datAdjT.RData")
+load(file="W_matter_abs_Log2FC.RData")
+
+datAdjT <- datAdjT[rownames(abs_Log2FC),colnames(abs_Log2FC)]
+
+library(foreach)
+library(doParallel)
+cl <- makeCluster(4)
+registerDoParallel(cl)
+
+
+DP<-foreach(i=1:nrow(datAdjT),.combine=rbind,.inorder=TRUE) %dopar% {
+  a<-datAdjT[i,]
+  b<-abs_Log2FC[i,]
+  data<-c()
+  data[which(a<=0.01 & b>=11)]<-1
+  data[which(a>0.01 | b<11)]<-0
+  return(data)
+}
+
+DP<-as.data.frame(DP)
+rownames(DP)<-rownames(datAdjT)
+colnames(DP)<-colnames(datAdjT)
+
+# SelPro_FC1.5<-colnames(DP)[apply(DP, 2, function(x){sum(x==1)>0})] #5824
+# SelPro_FC3<-colnames(DP)[apply(DP, 2, function(x){sum(x==1)>0})] #4523
+# SelPro_FC3_padj0.01<-colnames(DP)[apply(DP, 2, function(x){sum(x==1)>0})] #4109
+SelPro_FC11_padj0.01<-colnames(DP)[apply(DP, 2, function(x){sum(x==1)>0})] 
+#log2FC5 3434, log2FC8 2752, log2FC10 2294, log2FC12 1555, log2FC14 434, log2FC13 963
+
+stopImplicitCluster()
+stopCluster(cl)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+save(DP, SelPro_FC11_padj0.01, SelPro_FC12_padj0.01, file="W_matter_differential_protiens_abs_log2FC_11_12_adjP_0.01.csv")
+
+
+#mean in BBA region  delet小脑
+# datMean<-datExpression
+# datMean$BBA<-info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datMean),info$sample)]
+# # table(datMean$BBA)
+# datMean1<-reshape2::melt(datMean,id="BBA")
+# datMean2<-reshape2::acast(datMean1, BBA~variable, mean, na.rm=T)
+# datExpression<-as.data.frame(datMean)
+```
+# ts select pro
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/ts_greymatter")
+ts<-data.table::fread('HBA_Allen_ts_8929pro_1521sam_Gray_BBA_3_2_2.5_20220922.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+ts<-data.frame(ts, row.names = "V1")
+ts_pro<-colnames(ts)[apply(ts, 2, function(x){sum(!is.na(x))>0})]
+rownames(ts)<-sapply(rownames(ts), function(x){str_split(x,"_G")[[1]][1]})
+ts1<-ts[-grep("_",rownames(ts)), ]
+ts_pro<-colnames(ts1)[apply(ts1, 2, function(x){sum(!is.na(x))>0})]
+```
+#match　datNormolized
+```{r}
+# for foldchange and t-test
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+load(file="W_matter_differential_protiens_abs_log2FC_11_12_adjP_0.01.csv")
+# SelPro_FC13_padj0.01<-colnames(DP)[apply(DP, 2, function(x){sum(x==1)>0})]
+
+# delet cerebellum, subcortical, Insular lobe
+# DP1<-DP[-grep("Cerebellum",rownames(DP)),]
+# SUB<-c("Thalamus_Tha", "BasalGanglia_BG", "Hippocampus_Hipp", "Hypothalamus_HTha", "Amygdala_Amyg", "Epithalamus_Etha")
+# DP2<-DP1[-unlist(sapply(SUB, function(x){grep(x,rownames(DP1))})), ] #SubcorticalNuclei
+# DP3<-DP2[-grep("INS_",rownames(DP2)),]  #insular lobe
+# SelPro_FC13_padj0.01<-colnames(DP3)[apply(DP3, 2, function(x){sum(x==1)>0})]  #426
+
+# all health grey matter | delet NA by BBA 
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/FC_pro")
+load(file = "datExpr11_W_row1060_coL6179_after_delet_NA_by_BBA.RData")
+# datExpression<-datExpr11[,SelPro_FC5_padj0.01]
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+df_nor<-data.table::fread('HBA_prot_matrix_normolized_20220811.csv',data.table = F)
+rownames(df_nor)<-df_nor[,1]
+df_nor<-df_nor[,-1]
+df_nor1<-df_nor[rownames(datExpr11),]
+df_nor1<-as.data.frame(t(df_nor1))
+
+df_nor1$pro<-sapply(rownames(df_nor1),function(x){str_split(x,"-")[[1]][1]})
+df_nor2<-reshape2::melt(df_nor1,id="pro")
+df_nor3<-reshape2::acast(df_nor2, pro~variable, mean, na.rm=T)
+df_nor3<-as.data.frame(t(df_nor3))
+
+datExpression<-df_nor3[,SelPro_FC12_padj0.01] #1521 grey matter * 963 proteins
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix")
+save(datExpression, file="datExpression_1060whiteMatter_624_FC_12_padj_0.01.RData")
+
+#for ts
+# datExpression<-df_nor3[,ts_pro]
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix")
+# save(datExpression, file="datExpression_1521greyMatter_1906_ts_pro_delet_CE_SUB_INS.RData")
+```
+#data greymatter Expression/distance
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+# foldchange and t-test select protien
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix")
+load(file="datExpression_1521greyMatter_9639_FC_13_padj_0.01.RData")
+
+#WGCNA Select protein
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/WGCNA_select_pro")
+# load(file="datExpr_1512samples_1009pro.RData")
+# load(file="datDistance_dissTOMA.RData")
+
+# length(intersect(SelPro_FC13_padj0.01, colnames(datExpr)))  #247
+# 
+# # datDist<-dissTOMA
+# datExpression<-datExpr
+
+  #file NA
+  # datExpression1<-as.data.frame(t(datExpression))
+  # minR <- as.numeric(min(datExpression1,na.rm = T))
+  # datExpression2 <- data.frame(datExpression1,rNA=rowSums(is.na(datExpression1)))
+  # 
+  # datExpression1[is.na(datExpression1)] <- 0.5*minR+runif(sum(datExpression2$rNA),-1,1)
+  # datExpression<-as.data.frame(t(datExpression1))
+  
+  # datExpression1<-apply(datExpression, 2, function(x){scale(x)})
+  # rownames(datExpression1)<-rownames(datExpression)
+  # datExpression<-as.data.frame(datExpression1)
+  
+  #delete "Cerebellum" "SubcorticalNuclei" INS
+  # SUB<-c("Thalamus_Tha", "BasalGanglia_BG", "Hippocampus_Hipp", "Hypothalamus_HTha", "Amygdala_Amyg", "Epithalamus_Etha")
+  # datExpression$BBA<-info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datExpression),info$sample)]
+  # datNO_CESU<-datExpression[-grep("Cerebellum",datExpression$BBA),]
+  # datNO_CESU2<-datNO_CESU[-unlist(sapply(SUB, function(x){grep(x,datNO_CESU$BBA)})), ] #SubcorticalNuclei
+  # datNO_CESU3<-datNO_CESU2[-grep("INS_",datNO_CESU2$BBA),]  #919 cortex samples
+  # datExpression<-datNO_CESU3[,-ncol(datNO_CESU3)] #919皮层samples*2275pro
+  
+  # mean by ABB
+  # datExpression$BBA<-info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datExpression),info$sample)]
+  # datExpression1<-reshape2::melt(datExpression, by="BBA")
+  # datExpression2<-reshape2::acast(datExpression1, BBA~variable, mean, na.rm=T)
+  # datExpression<-datExpression2
+  
+#Select 1 donor
+# datExpression$donorID<-info$Donor_ID[match(rownames(datExpression), info$sample)]
+# donorID<-unique(datExpression$donorID)
+# sample_num<-NULL
+# for (i in 1:4){
+#   d1<-length(datExpression$donorID[grep(donorID[i], datExpression$donorID)])
+#   d2<-data.frame(donorID=donorID[i], Num=d1)
+#   sample_num<-rbind(sample_num, d2)
+# }
+# # P4	419			
+# # P1	421			
+# # P2	318			
+# # P3	363  
+#   datExpression1<-datExpression[grep(donorID[2], datExpression$donorID),]
+#   datExpression<-datExpression1[,-ncol(datExpression1)]
+  
+  
+  datCor<-cor(t(datExpression),use = "pairwise.complete.obs",method = "pearson")
+  datDist<-sqrt(1-datCor^2)                 #sqrt(1-datCor^2) 1-datCor^2
+
+  # datDist<-as.matrix(dist(t(datExpression1),method="euclidean",p=2))
+
+  # datDist<-dissTOMA
+
+  # datDist<-1-adjacencyA
+
+
+```
+#data white matter Expression/distance
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+# foldchange and t-test select protien
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix")
+load(file="datExpression_1060whiteMatter_1011_FC_11_padj_0.01.RData")
+
+datCor<-cor(t(datExpression),use = "pairwise.complete.obs",method = "pearson")
+datDist<-sqrt(1-datCor^2)   
+```
+#--------------------
+# TSNE/UMAP/MDS
+#--------------------
+# TSNE distance
+```{r}
+  set.seed(1)
+  datP<-Rtsne(datDist, pca=TRUE, perplexity=50, theta=0.1, pca_scale=TRUE, is_distance=T, dims = 2) 
+  #expre/distance:is_distance=T
+  datP1<-as.data.frame(datP$Y) 
+  
+  colnames(datP1)<-c("PC1","PC2")  #, "PC3")
+  rownames(datP1)<-rownames(datExpression)
+  
+  datP1$Lobe <- info$Lobe[match(rownames(datP1),info$sample)]
+  datP1$gyrus <- info$Gyrus[match(rownames(datP1),info$sample)]
+  datP1$DonorID <- info$Donor_ID[match(rownames(datP1),info$sample)]
+  datP1$sex <- info$Sex[match(rownames(datP1),info$sample)]
+  datP1$L_R <- info$Hemisphere[match(rownames(datP1),info$sample)]
+  datP1$W_G <- info$W_G[match(rownames(datP1),info$sample)]
+  datP1$BBA <- info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datP1),info$sample)]
+
+  color=c("Lobe", "gyrus", "DonorID", "sex", "L_R", "W_G", "BBA")
+  # mycols<-colors()[sample(1:600, length(unique(datP1$BBA)), replace = F)]
+  for(k in 1:(length(color)-1)){
+  ggplot(datP1,aes(PC1,PC2,color=datP1[,k+2]))+  #as.factor(color[i])
+          geom_point(size=0.6)+ theme_bw() +
+          theme(panel.border = element_rect(fill=NA,color="black", size=1.5, linetype="solid"))+
+          #xlim(-3,4)+ylim(-4,4)+ 
+          geom_hline(yintercept = 0,lty=2,col="red",lwd=0.2) + 
+          geom_vline(xintercept = 0,lty=2,col="blue",lwd=0.2) +
+          theme(plot.title = element_text(hjust = 0.5)) + 
+          # geom_text(aes(label=BBA,vjust=0.5,hjust=-0.2,angle=0),size=0.3,show.legend=T)+
+          labs(title = "TSNE",color=color[k])
+          # scale_fill_manual(values = mycols)+
+          # scale_colour_manual(values = mycols)
+          # scale_color_brewer(palette="Paired")
+  setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/ts_greymatter/delet_SUB_CE_INS")
+  ggsave(filename = paste(color[k],seq="_","datDist_TSNE_scale_919samples_1906pro_delet_CE_SUB_INS.pdf"), width=30, height = 10) #, width=30, height = 8
+  } 
+  
+#   centroid <- aggregate(datP1[,c(1, 2, 5)], by=list(datP1$BBA), FUN = mean)
+#   centroid<-centroid[,-ncol(centroid)]
+#   colnames(centroid)<-c("BBA", "PC1", "PC2")
+#   coords <- merge(datP1, centroid, by.x = "BBA", by.y ="BBA", all.x = T, suffixes = c("",".centroid"),)
+#   
+#   colors<-colors()[-grep("white",colors())]
+#   mycols2<-colors[sample(1:625, length(unique(datP1$BBA)), replace = F)]
+# # mycols2 <- brewer.pal(9,"Set3")[1:8]
+#   ggplot(data = coords, aes(x = PC1, y = PC2))+
+#       geom_point(aes(fill = BBA), colour="white",shape = 21, size = 1, show.legend = FALSE)+
+#       geom_curve(aes(xend= PC1.centroid, yend= PC2.centroid, colour = BBA),
+#                      angle=150,curvature = -0.5,show.legend = FALSE)+
+#       scale_fill_manual(values = mycols2, name="BBA")+
+#       scale_colour_manual(values = mycols2, guide="none")+
+#       geom_label(data = centroid, aes(label = BBA, fill = BBA), size = 1, hjust=0.5, color="white",show.legend                 = FALSE)
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/fc_greymatter")
+# ggsave("datDist_TSNE_scale_963pro_1521sample_greymatter_allregion_geomcurve_BBAanno.pdf", width=12, height = 10)
+    
+  # library(plotly)
+  # TSNE_3D<-plot_ly(data = datP1, 
+  #            x = ~PC1, y = ~PC2, z = ~PC3, 
+  #            color = ~Lobe, 
+  #            # colors = c("#151F42","#61B3B5","#4472C4","#EE781C","#8F4B99","#4EA748","#9999CC","#FF6699"),
+  #            type = "scatter3d", 
+  #            mode = "markers", 
+  #            marker = list(size = 5, width=2), # controls size of points
+  #            text=~BBA, #This is that extra column we made earlier for which we will use for cell ID
+  #            hoverinfo="text") #When you visualize your plotly object, hovering your mouse pointer over a point shows cell names
+  # MDS_3D<-layout(TSNE_3D,title="TSNE_3D")
+  # MDS_3D
+
+
+  
+```
+#UAMP expression
+```{r}
+# umap  用expression比较好
+  set.seed(1)
+  datP<-uwot::umap(datExpression, n_neighbors = 50,  #distance: as.dist
+                    metric = "correlation", spread = 10,
+                    min_dist = 0.01, verbose = TRUE, scale="maxabs")   #, scale="z" "maxabs" "range" "colrange"
+  # metric="cosine" "correlation" "euclidean"
+  datP1<-as.data.frame(datP)
+  
+  colnames(datP1)<-c("PC1","PC2")
+  datP1$Lobe <- info$Lobe[match(rownames(datP1),info$sample)]
+  datP1$gyrus <- info$Gyrus[match(rownames(datP1),info$sample)]
+  datP1$DonorID <- info$Donor_ID[match(rownames(datP1),info$sample)]
+  datP1$sex <- info$Sex[match(rownames(datP1),info$sample)]
+  datP1$L_R <- info$Hemisphere[match(rownames(datP1),info$sample)]
+  datP1$W_G <- info$W_G[match(rownames(datP1),info$sample)]
+  datP1$BBA <- info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datP1),info$sample)]
+  datP1$batch <- sapply(rownames(datP1),function(x){str_split(x,"_")[[1]][1]})
+
+  color=c("Lobe", "gyrus", "DonorID", "sex", "L_R", "W_G", "BBA", "batch")
+  for(k in 1:(length(color)-2)){
+  ggplot(datP1,aes(PC1,PC2,color=datP1[,k+2]))+  #as.factor(color[i])
+          geom_point(size=2)+ theme_classic() +
+          theme(panel.border = element_rect(fill=NA,color="black", size=1.5, linetype="solid"))+
+          #xlim(-3,4)+ylim(-4,4)+ 
+          # geom_hline(yintercept = 0,lty=2,col="red",lwd=0.2) + 
+          # geom_vline(xintercept = 0,lty=2,col="blue",lwd=0.2) +
+          theme(plot.title = element_text(hjust = 0.5)) + 
+          # geom_text(aes(label = batch, vjust=0.5,hjust=-2,angle=0),size=0.3,show.legend=T)+
+          labs(title = "UMAP",color=color[k])+
+          # scale_color_manual(values=c("#151F42","#61B3B5"))  #Sex
+          # scale_color_manual(values=c( "#4E89AE","#ED6663"))  #L_R
+          # scale_color_manual(values=c("#4472C4","#EE781C"))  #W_G
+          scale_color_manual(values=c("#151F42","#61B3B5","#4472C4","#EE781C","#8F4B99","#4EA748","#9999CC","#FF6699"))  #Lobe
+          # scale_color_brewer(palette="Paired")
+ setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221118_for_AI")
+  ggsave(filename = paste(color[k],seq="_","datExpression_UMAP_maxabs_scale_2581samples_9218pro_allregion_spread10.pdf"), width=12, height = 10)
+  } 
+  
+#   centroid <- aggregate(datP1[,c(1, 2, 5)], by=list(datP1$BBA), FUN = mean)
+#   centroid<-centroid[,-ncol(centroid)]
+#   colnames(centroid)<-c("BBA", "PC1", "PC2")
+#   coords <- merge(datP1, centroid, by.x = "BBA", by.y ="BBA", all.x = T, suffixes = c("",".centroid"),)
+#   colors<-colors()[-grep("white",colors())]
+#   mycols2<-colors[sample(1:625, length(unique(datP1$BBA)), replace = F)]
+# # mycols2 <- brewer.pal(9,"Set3")[1:8]
+# ggplot(data = coords, aes(x = PC1, y = PC2))+
+#       geom_point(aes(fill = BBA), colour="white",shape = 21, size = 1, show.legend = FALSE)+
+#       geom_curve(aes(xend= PC1.centroid, yend= PC2.centroid, colour = BBA),
+# angle=150,curvature = -0.5,show.legend = FALSE)+
+#       scale_fill_manual(values = mycols2, name="BBA")+
+#       scale_colour_manual(values = mycols2, guide="none")
+#       # geom_label(data = centroid, aes(label = BBA, fill = BBA), size = 1, hjust=0.5, color="white",show.legend = FALSE)
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/fc_greymatter")
+# ggsave("datExpression_UMAP_scale_963pro_1521sample_greymatter_allregion_geomcurve.pdf", width=12, height = 10)
+```
+#MDS distance
+```{r}
+  # cmds
+  # set.seed(1)
+  # datDist<-as.data.frame(apply(datDist, 2, function(x){scale(x)}))
+  # rownames(datDist)<-colnames(datDist)
+  datP <- cmdscale(datDist,eig=F,k=2)   #distance
+  datP1<-as.data.frame(datP)
+  
+  colnames(datP1)<-c("PC1","PC2") #,"PC3")
+
+  datP1$Lobe <- info$Lobe[match(rownames(datP1),info$sample)]
+  datP1$gyrus <- info$Gyrus[match(rownames(datP1),info$sample)]
+  datP1$DonorID <- info$Donor_ID[match(rownames(datP1),info$sample)]
+  datP1$sex <- info$Sex[match(rownames(datP1),info$sample)]
+  datP1$L_R <- info$Hemisphere[match(rownames(datP1),info$sample)]
+  datP1$W_G <- info$W_G[match(rownames(datP1),info$sample)]
+  datP1$BBA <- info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(datP1),info$sample)]
+
+  color=c("Lobe", "gyrus", "DonorID", "sex", "L_R", "W_G", "BBA")
+  for(k in 1:(length(color)-1)){
+  ggplot(datP1,aes(PC1,PC2,color=datP1[,k+2]))+  #as.factor(color[i])
+          geom_point(size=2)+ theme_classic() +
+          theme(panel.border = element_rect(fill=NA,color="black", size=1.5, linetype="solid"))+
+          #xlim(-3,4)+ylim(-4,4)+ 
+          # geom_hline(yintercept = 0,lty=2,col="red",lwd=0.2) + 
+          # geom_vline(xintercept = 0,lty=2,col="blue",lwd=0.2) +
+          theme(plot.title = element_text(hjust = 0.5)) + 
+          # geom_text(aes(label=BBA,vjust=0.5,hjust=-0.2,angle=0),size=0.3,show.legend=T)+
+          labs(title = "MDS",color=color[k])+
+          # scale_color_brewer(palette="Paired")
+          # scale_color_manual(values=c("#151F42","#61B3B5"))  #Sex
+          scale_color_manual(values=c( "#4E89AE","#ED6663"))  #L_R
+          # scale_color_manual(values=c("#4472C4","#EE781C"))  #W_G
+          # scale_color_manual(values=c("#151F42","#61B3B5","#4472C4","#EE781C","#8F4B99","#4EA748","#9999CC","#FF6699"))  #Lobe
+          # scale_color_brewer(palette="Paired")
+ setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221118_for_AI")
+  ggsave(filename = paste(color[k],seq="_","W_matter_datdist_MDS_1060samples_1011pro.pdf"), width=12, height = 10)
+  } 
+  
+  centroid <- aggregate(datP1[,c(1, 2, 5)], by=list(datP1$BBA), FUN = mean)
+  centroid<-centroid[,-ncol(centroid)]
+  colnames(centroid)<-c("BBA", "PC1", "PC2")
+  coords <- merge(datP1, centroid, by.x = "BBA", by.y ="BBA", all.x = T, suffixes = c("",".centroid"),)
+colors<-colors()[-grep("white",colors())]
+mycols2<-colors[sample(1:625, length(unique(datP1$BBA)), replace = F)]
+# mycols2 <- brewer.pal(9,"Set3")[1:8]
+ggplot(data = coords, aes(x = PC1, y = PC2, color=BBA))+
+      geom_point(aes(size=0.4))+theme_bw() +
+      # geom_curve(aes(xend= PC1.centroid, yend= PC2.centroid, colour = BBA),
+# angle=150,curvature = -0.5,show.legend = FALSE)+
+      scale_fill_manual(values = mycols2, name="BBA")+
+      scale_colour_manual(values = mycols2, guide="none")+
+      geom_label(data = centroid, aes(label = BBA, fill = BBA), size = 1, hjust=0.5, color="white",show.legend = FALSE)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/umap_tesne_MDS/20221114_normolized_matrix/fc_greymatter")
+ggsave("datDist_MDS_963pro_1521sample_greymatter_allregion_BBA_meanlable.pdf", width=12, height = 10)
+
+  #3D
+  # library(plotly)
+  # MDS_3D<-plot_ly(data = datP1, 
+  #            x = ~PC1, y = ~PC2, z = ~PC3, 
+  #            color = ~BBA, 
+  #            # colors = c("#151F42","#61B3B5","#4472C4","#EE781C","#8F4B99","#4EA748","#9999CC","#FF6699"),
+  #            type = "scatter3d", 
+  #            mode = "markers", 
+  #            marker = list(size = 5, width=2), # controls size of points
+  #            text=~BBA, #This is that extra column we made earlier for which we will use for cell ID
+  #            hoverinfo="text") #When you visualize your plotly object, hovering your mouse pointer over a point shows cell names
+  # MDS_3D<-layout(MDS_3D,title="MDS_3D")
+  # MDS_3D
+
+
+```
+
+
+
