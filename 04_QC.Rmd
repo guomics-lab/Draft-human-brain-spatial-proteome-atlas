@@ -1,0 +1,191 @@
+---
+title: "Biorep_by_BBA"
+author: "Yuting Xie"
+date: "2022-12-07"
+output: html_document
+---
+```{r}
+rm(list=ls())
+pacman::p_load(readxl,magrittr,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,preprocessCore,reshape2,dplyr)
+```
+
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+info <- info[,c(4,13,14,15,18)]
+
+datExpr0 <- data.table::fread('HBA_prot_matrix_11746pros_2824samples_202200909.csv', stringsAsFactors = F, data.table = F, fill = T)
+datExpr0 <- data.frame(datExpr0, row.names = "V1")
+datExpr1 <- as.data.frame(t(datExpr0))
+```
+#pool
+```{r}
+#COR
+df_pool <- datExpr1[grepl("pool",rownames(datExpr1)), ]  
+df_pool1<-df_pool[, apply(df_pool,2,function(x) sum(!is.na(x)) > 0)]
+pool.cor<-cor(t(df_pool1), use = "complete.obs", method = "pearson") 
+pool.cor1 <- melt(pool.cor)
+pool.cor2 <- pool.cor1[!duplicated(pool.cor1$value), ]
+pool.cor2 <- pool.cor2[-which(pool.cor2$value==1), ]
+cor_pool <- data.frame(value=pool.cor2$value, group="Quality control samples")
+#CV
+df_pool1 <- df_pool1[, apply(df_pool1, 2, function(x){sum(!is.na(x))>1})]
+pool_cv<-apply(df_pool1,2,function(x){sd(x,na.rm=T)/mean(x,na.rm=T)})
+cv_pool<-data.frame(value=pool_cv, group="Quality control samples")
+#umap
+library(uwot)
+set.seed(6)
+df_pool1[is.na(df_pool1)]<-min(df_pool1,na.rm=T)/2
+umap.data <- umap(df_pool1, n_components=2, n_neighbors = 100, metric = "cosine", min_dist = 0.001,spread = 1,verbose = TRUE, n_threads = 4,approx_pow = TRUE) 
+umap.data<-as.data.frame(umap.data) #$layout
+colnames(umap.data)<-c("umap1","umap2")
+umap.data$batchID<-rownames(umap.data)
+
+info<-data.table::fread("//172.16.13.114/share/project/HBA_xiaoqi/DataAnalysis20220812/FileInfo/FileInfo/FIleInfo_HBA_20220816.csv",data.table = F)
+info$MS<-info$name
+info$MS<-sapply(info$MS,function(x){str_split(x,"20")[[1]][1]})
+
+umap.data$MS<-info$MS[match(rownames(umap.data),info$sample)]
+
+umap.fig<-ggplot(umap.data[,1:2],aes(umap1,umap2,color=umap.data$MS)) + 
+  geom_point(size=4) + theme_bw() + 
+  geom_hline(yintercept = 0,lty=2,col="red",lwd=0.25) + 
+  geom_vline(xintercept = 0,lty=2,col="blue",lwd=0.25) +
+  theme(plot.title = element_text(hjust = 2)) + 
+  # geom_text(aes(label=umap.data$batchID,vjust=0.01,hjust=-0.08,angle=0),show.legend=FALSE,size=0.8)+
+  labs(title = "Pool_umap",color="MS")
+umap.fig
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Biorep_by_BBA")
+ggsave(umap.fig,file='Pool_umap.pdf',width=12, height=10)
+```
+#rep
+```{r}
+rep1 <- colnames(datExpr0)[grep("_rep",colnames(datExpr0))] 
+rep2 <- gsub('_rep','',rep1)
+
+a <- intersect(colnames(datExpr0),rep2)
+b <- rep2[which(rep2%in%colnames(datExpr0)==FALSE)]
+
+rep.data <- datExpr0[,rep1[match(a,rep2)]]
+original.data <- datExpr0[,a] 
+#cor
+cor<-c()
+for(i in 1:length(a)){
+  rep.cor<-cor(original.data[,i],rep.data[,i],use = "complete.obs",method="pearson")
+  cor<-c(cor,rep.cor)
+}
+cor_rep<-data.frame(value=cor, group="Technical replicate samples")
+
+#cv
+sum.cv<-c()
+for(i in 1:length(a)){
+  data<-cbind(original.data[,i],rep.data[,i])
+  rep_cv<-apply(data,1,function(x){sd(x,na.rm=T)/mean(x,na.rm=T)})
+  sum.cv<-c(sum.cv,rep_cv)
+}
+cv_rep <- data.frame(value=sum.cv, group="Technical replicate samples")
+cv_rep <- na.omit(cv_rep)
+```
+
+#biorep
+```{r}
+# datExpr1<-as.data.frame(t(datExpr0))
+
+datExpr1$sample <- rownames(datExpr1)
+
+datExpr2 <- merge(datExpr1, info, by="sample")
+datExpr2 <- datExpr2[which(datExpr2$pathology=="health"),]
+
+GW <- c("G", "W")
+LR <- c("L", "R")
+library(Hmisc)
+cortest <- NULL
+CV <- NULL
+for(i in 1:length(GW)){
+  M <- datExpr2[which(datExpr2$W_G==GW[i]), ]
+  for(j in 1:length(LR)){
+    H <- M[which(M$Hemisphere==LR[j]), ]
+    BBA <- unique(H$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions)
+    for(k in 1:length(BBA)){
+      B <- H[which(H$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions==BBA[k]), ]
+      if(nrow(B)==1){next}
+      else{
+      B <- data.frame(B, row.names = "sample")
+      B <- B[, -c((ncol(B)-3):ncol(B))]
+      B <- t(B)
+      cortest0 <- cor(B, method="pearson", use = "pairwise.complete.obs")
+      cortest0 <- melt(cortest0)
+      cortest0 <- cortest0[!duplicated(cortest0$value), ]
+      cortest0$BBA <- BBA[k]
+      cortest0$H <- LR[j]
+      cortest0$GW <- GW[i]
+      cortest <- rbind(cortest, cortest0)}
+      
+      B1 <- B[apply(B, 1, function(x){sum(!is.na(x))>1}), ]
+      CV0 <- apply(B1,1,function(x){sd(x,na.rm=T)/mean(x,na.rm=T)})
+      CV0 <- data.frame(pro=rownames(B1), cv=CV0, BBA=BBA[k], H=LR[j], GW=GW[i], type="CV")
+      CV <- rbind(CV, CV0)
+    }
+  }
+}
+
+colnames(cortest)[1:3] <- c("sample1", "sample2", "value") 
+cortest1 <- cortest[-which(cortest$value==1), ]
+# cortest1$GWH <- paste(cortest1$GW, sep="_", cortest1$H)
+# cortest1$type <- c("correlation")
+
+# colnames(CV)[2] <- "value"
+# corLower0.5 <- cortest1[cortest1$value<0.5, ]
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Biorep_by_BBA")
+# write.csv(corLower0.5, "corLower0.5_in_BBA_normolized_matrix.csv")
+# datbiorep <- rbind(cortest1[,c(3,7)], CV[,c(2,6)])
+
+cor_biorep <- data.frame(value=cortest1$value, group="Biological replicate samples")
+cv_biorep <- data.frame(value=CV$cv, group="Biological replicate samples")
+
+library(tidyverse)
+Corr <- do.call("rbind", list(cor_pool, cor_rep, cor_biorep))
+CV_all <- do.call("rbind", list(cv_pool, cv_rep, cv_biorep))
+
+ggplot(CV_all, aes(x=group, y=value, fill=group)) +
+    geom_violin(position=position_dodge(0.9))+
+    geom_boxplot(width=0.1,position=position_dodge(0.9), outlier.size=0.2)+
+    ggtitle(paste0(""))+
+    # ylim(0,1)+
+    scale_fill_manual(values=c("#667FFF","#FF667F", "#8360c3", "#f7797d"))+
+    scale_y_continuous(limits=c(0,1),breaks = seq(0,1,0.1))+
+    theme(text = element_text(size = 12),
+          plot.title = element_text(vjust = -3,hjust = 0.5),
+          panel.background = element_blank(),
+          # panel.grid.major.y = element_line(colour = "grey70",size=0.1),
+          axis.line= element_line(colour = "black",size=0.5))
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Biorep_by_BBA")
+ggsave(file='cv_pool_rep_biorep_ggplot_geom_violin_before_normolized_matrix.pdf',width=8, height=6)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Biorep_by_BBA")
+pdf('cor_pool_rep_biorep_ggplot_geom_violin_before_normolized_matrix_2.pdf',width=8,height=6)
+vioplot(cor_pool$value, cor_rep$value, cor_biorep$value,
+        names=c("cor_pool", "cor_rep", "cor_rep"),
+        ylab = "Cor", 
+        # main = "Pool_replication_CV", 
+        ylim=c(0,1),
+        cex.axis=1.5,cex.main=1.5,cex.lab=2,col=c("#667FFF", "#FF667F", "#8360c3"))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Biorep_by_BBA")
+pdf('cv_pool_rep_biorep_ggplot_geom_violin_before_normolized_matrix_2.pdf',width=8,height=6)
+vioplot(cv_pool$value, cv_rep$value, cv_biorep$value,
+        names=c("cv_pool", "cv_rep", "cv_rep"),
+        ylab = "cv", 
+        # main = "Pool_replication_CV", 
+        ylim=c(0,1),
+        cex.axis=1.5,cex.main=1.5,cex.lab=2,col=c("#667FFF", "#FF667F", "#8360c3"))
+
+
+
+```
+

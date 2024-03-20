@@ -1,0 +1,278 @@
+---
+title: "Transcripts_Proteins_correlation"
+author: "Yuting Xie"
+date: "2023/08/03"
+output: html_document
+---
+```{r}
+rm(list = ls())
+pacman::p_load(readxl,magrittr,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,reshape2,preprocessCore,data.table)
+```
+
+# 6 donors transcripts matrix
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+RNA_info<-data.table::fread("Info_Allen_mRNA_sub_matrix_9162prot_2113sample20220920.csv",stringsAsFactors = F, data.table = F, fill = T)
+
+RNA<-data.table::fread("Allen_mRNA_sub_matrix_9162prot_2113sample20220920.csv",stringsAsFactors = F, data.table = F, fill = T)
+RNA<-data.frame(RNA,row.names = "V1")
+RNA[1,]<-as.character(RNA[1,])
+colnames(RNA)<-RNA[1,]
+RNA<-RNA[-1,]
+```
+
+# protein matrix
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+pro_info<-data.table::fread("E:/HBA/cor_pro_RNA/FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv",data.table = F)
+pro <- data.table::fread('HBA_prot_matrix_11746pros_2824samples_202200909.csv', stringsAsFactors = F, data.table = F, fill = T)
+rownames(pro)<-pro[,1]
+pro<-pro[,-1]
+
+pro<-as.data.frame(t(pro))
+pro1<-pro[match(pro_info$sample[which(pro_info$pathology=="health",)],rownames(pro)),]
+pro1$W_G<-pro_info$W_G[match(rownames(pro1),pro_info$sample)]
+pro2<-pro1[grep("G",pro1$W_G),] 
+
+pro3<-as.data.frame(t(pro2[,-ncol(pro2)]))
+pro3$protein<-sapply(rownames(pro3),function(x){str_split(x,"-")[[1]][1]}) 
+
+rep_pro<-unique(pro3$protein[duplicated(pro3$protein)])
+
+s<-sapply(rep_pro,function(x){grep(x, pro3$protein)})
+s_order<-c()
+for(j in 1:length(s)){
+  s1<-s[[j]]
+  s_order<-c(s_order,s1)
+}
+pro4<-pro3[-s_order,]
+rownames(pro4)<-pro4$protein
+pro4<-pro4[,-ncol(pro4)]
+
+pro5<-pro3[s_order,]
+
+pro6<-reshape2::melt(pro5,id="protein")
+pro6$value<-as.numeric(pro6$value)
+pro7<-reshape2::dcast(pro6, protein~variable, mean, na.rm=T)
+pro7<-data.frame(pro7,row.names = "protein" )
+pro8<-rbind(pro4,pro7)
+
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+Pro2geneSymbol<-data.table::fread("gene2protein_reviewed_uniprot_seprow.csv",data.table = F)
+Pro2geneSymbol<-data.frame(ProID=Pro2geneSymbol$Entry, GeneSymbol=Pro2geneSymbol$Gene.Names)
+
+pro8$geneSymbol<-Pro2geneSymbol$GeneSymbol[match(rownames(pro8),Pro2geneSymbol$ProID)]
+
+pro8$geneSymbol[pro8$geneSymbol==""]<-"----"
+rep_gene<-unique(pro8$geneSymbol[duplicated(pro8$geneSymbol)])
+
+s<-sapply(rep_gene,function(x){grep(x, pro8$geneSymbol)})
+s_order<-c()
+for(j in 1:length(s)){
+  s1<-s[[j]]
+  s_order<-c(s_order,s1)
+}
+
+pro2gene1<-pro8[-s_order,]
+rownames(pro2gene1)<-pro2gene1$geneSymbol
+pro2gene1<-pro2gene1[,-ncol(pro2gene1)]
+
+pro2gene2<-pro8[s_order,]
+pro2gene2<-pro2gene2[-grep("----",pro2gene2$geneSymbol),]
+
+pro2gene3<-reshape2::melt(pro2gene2,id="geneSymbol")
+pro2gene3$value<-as.numeric(pro2gene3$value)
+pro2gene4<-reshape2::dcast(pro2gene3, geneSymbol~variable, mean, na.rm=T)
+pro2gene4<-data.frame(pro2gene4,row.names = "geneSymbol")
+
+pro2gene<-rbind(pro2gene1,pro2gene4)
+```
+
+# mean in BBA
+```{r}
+# proteins
+pro2gene<-as.data.frame(t(pro2gene))
+pro2gene$BBA<-pro_info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions[match(rownames(pro2gene),pro_info$sample)]
+
+pro2gene_melt<-reshape2::melt(pro2gene,id="BBA")
+pro2gene_melt$value<-as.numeric(pro2gene_melt$value)
+pro2gene_cast<-reshape2::dcast(pro2gene_melt, BBA~variable, mean, na.rm=T)
+pro_mean<-data.frame(pro2gene_cast,row.names = "BBA")
+pro_mean1<-pro_mean[,apply(pro_mean,2,function(x){sum(!is.na(x))>0})]
+
+
+# 6 donors - transcripts
+RNA1<-as.data.frame(t(RNA))
+RNA1$region<-RNA_info$region_matchName[match(rownames(RNA1),RNA_info$well_id)]
+
+structure<-unique(RNA1$region)
+
+RNA2<-RNA1[-grep("#N/A",RNA1$region),]
+
+RNA2_melt<-reshape2::melt(RNA2,id="region")
+RNA2_melt$value<-as.numeric(RNA2_melt$value)
+RNA2_cast<-reshape2::dcast(RNA2_melt, region~variable, mean, na.rm=T)
+RNA_mean<-data.frame(RNA2_cast,row.names = "region")
+
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+save(pro_mean,RNA_mean,file="region_mean_pro_RNA.RData")
+write.csv(pro_mean, "proteins_mean_abundance_in_BBA.csv")
+write.csv(RNA_mean, "transcripts_mean_abundance_in_BBA.csv")
+```
+
+#transcripts_protein_correlation
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+load(file="region_mean_pro_RNA.RData")
+
+pro<-as.data.frame(t(pro_mean))  #pro_mean 121*11083
+RNA<-as.data.frame(t(RNA_mean))  #RNA_mean 114*9162
+
+#missing value
+percent<-c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9)
+median<-NULL
+allMean<-NULL
+# for(i in 1:length(percent)){
+i=9
+  pro<-pro[apply(pro,1,function(x){sum(!is.na(x))>percent[i]*ncol(pro)}),]
+
+  com_gene<-intersect(rownames(pro),rownames(RNA)) 
+  com_region<-intersect(colnames(pro),colnames(RNA)) #114
+
+  pro1<-pro[com_gene,com_region]
+  RNA1<-RNA[com_gene,com_region]
+
+
+  mt<-c("pearson","spearman","kendall") 
+  cor<-c()
+  p_value<-c()
+  for (j in 1:length(com_gene)){
+    cor1<-cor.test(as.numeric(pro1[j,]),as.numeric(RNA1[j,]),method=mt[1],use = "pairwise.complete.obs") #spearman:exact=FALSE
+    cor2<-cor1$estimate
+    p_value1<-cor1$p.value
+    cor<-c(cor,cor2)
+    p_value<-c(p_value,p_value1)
+}
+cor_p<-data.frame(cor,p_value)
+rownames(cor_p)<-com_gene
+cor_p$p_adjust<-p.adjust(cor_p$p_value,method="BH")
+
+cor_p$Group<-c(1)
+PC<-which(cor_p$p_adjust<0.05 & cor_p$cor>0)
+cor_p$Group[PC]<-paste("Positive correlation",seq="_",round(length(PC)/nrow(cor_p),2))
+NC<-which(cor_p$p_adjust<0.05 & cor_p$cor<0)
+cor_p$Group[NC]<-paste("Negative correlation",seq="_",round(length(NC)/nrow(cor_p),2))
+NoC<-which(cor_p$p_adjust>=0.05)
+cor_p$Group[NoC]<-paste("No correlation",seq="_",round(length(NoC)/nrow(cor_p),2))
+
+cor_positive<-cor_p[cor_p$p_adjust<0.05 & cor_p$cor>0,]
+cor_negative<-cor_p[cor_p$p_adjust<0.05 & cor_p$cor<0,]
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+write.csv(cor_p, "4221_protiens_transcripts_correlation.csv")
+write.csv(cor_positive,"positive_correlation_gene_list_for_IPA.csv")
+write.csv(cor_negative,"negative_correlation_gene_list_for_IPA.csv")
+
+cor_fig<-ggplot(cor_p,aes(x = cor,fill= Group)) +  #,color=Group
+  geom_histogram(color="white", position = "identity", binwidth=0.01)+  #,binwidth=0.2  ,bins = 200
+  theme_bw()+ #theme_classic()+
+  scale_fill_manual(values=c("#06C99E", "#86A8E7", "#CD4191"))+  #"#86A8E7", 
+  #"#06C99E", "#86A8E7", "#CD4191"
+  labs(title=paste("the pearson correlation between RNA and protein","_median_",round(median(cor_p$cor),2)), x="pearson correlation", y = "Count")+
+  scale_x_continuous(limits=c(-0.8,1),breaks=seq(-0.8,1,0.2))+
+  geom_vline(aes(xintercept = median(cor)),linetype=5,col="red",size = 0.1)
+  # geom_density()
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+ggsave(cor_fig,file=paste(percent[i],"_region",'_6_donors_RNA_pro_pearson_cor_padjust.pdf'),width=9, height=5)
+
+# median0<-data.frame(median=median(cor_p$cor))
+# rownames(median0)<-paste(percent[i],"_region_")
+# median<-rbind(median,median0)
+
+cor_p$Group1<-c(1)
+cor_p$Group1[which(cor_p$p_adjust<0.05 & cor_p$cor>0)]<-30 
+cor_p$Group1[which(cor_p$p_adjust<0.05 & cor_p$cor<0)]<-10
+cor_p$Group1[which(cor_p$p_adjust>=0.05)]<-20 
+
+#pro2gene
+setwd("Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis")
+Pro2geneSymbol<-data.table::fread("gene2protein_reviewed_uniprot_seprow.csv",data.table = F)
+Pro2geneSymbol<-data.frame(ProID=Pro2geneSymbol$Entry,GeneSymbol=Pro2geneSymbol$Gene.Names)
+
+#match brain cell markers
+Cell<-data.table::fread("gene and brain cell type.csv",data.table = F)
+ConGene<-c(intersect(unique(Cell$gene_name),rownames(cor_p))) #453
+library(plyr)
+CellType<-acast(Cell,gene_name~type,length) 
+CellType1<-CellType[match(ConGene,rownames(CellType)),]
+
+cor_p1<-cor_p[rownames(CellType1),]
+
+CellType2<-CellType1
+CellType2[,]<-NA
+for(i in 1:length(ConGene)){
+  CellType2[i,which(CellType1[i,]>0)]<-cor_p1$Group1[i]
+}
+CellType2[is.na(CellType2)]<-0
+
+a <- cor_p[order(cor_p$cor),]
+a <- a[which(row.names(a)%in%row.names(CellType2)),]
+CellType2 <- CellType2[row.names(a),]
+dataheatmap<-as.data.frame(t(CellType2))
+dataheatmap <- dataheatmap[c(2,3,1,4,5,6),]
+
+DP_heatFig<-pheatmap::pheatmap(dataheatmap,
+         fontsize=15,
+         border_color=NA,
+         # color = RColorBrewer::brewer.pal(n=12, name = "Set3")[c(9,1,3,4,5,6,7,8,9,10,11,12,2)],
+         color=c("white", "#06C99E","#86A8E7", "#CD4191"),  #"#06C99E", "#86A8E7", "#CD4191"
+         #annotation_col = colnames(pathway2),
+         #annotation_colors = list(W_G=c(rep("#4472C4",26),rep("#EE781C",19),Region=rainbow(45))),
+         # na_color = "white",
+         trace = "none", 
+         scale = "none", 
+         cluster_rows = F,
+         cluster_cols = F,
+         show_rownames = T, 
+         show_colnames = F,
+         #main = "drug_target_cor_RNA_pro",
+         legend_breaks=c(10,20,30),
+         legend_labels=c("Negative correlation","No correlation","Positive correlation"),
+         filename = "Z:/Project/HBA/data_and_code_20230726/3_Correlation analysis/single_cell_in_cor_pro_RNA.pdf",
+         height = 10,width = 18)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

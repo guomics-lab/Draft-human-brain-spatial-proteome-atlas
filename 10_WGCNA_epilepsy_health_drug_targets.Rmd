@@ -1,0 +1,2581 @@
+---
+title: "HBA_health_vs_epilepsy_and_WGCNA"
+author: "Yuting Xie"
+date: "2023/07/07"
+output: html_document
+---
+
+#library
+```{r}
+rm(list=ls())
+pacman::p_load(readxl,magrittr,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,preprocessCore,reshape2,dplyr)
+```
+```{r}
+#function for geom_split_violin
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, draw_group = function(self, data, ..., draw_quantiles = NULL){
+  data <- transform(data, 
+                    xminv = x - violinwidth * (x - xmin), 
+                    xmaxv = x + violinwidth * (xmax - x))
+    grp <- data[1,'group']
+    newdata <- plyr::arrange(
+               transform(data, x = if(grp%%2==1) xminv else xmaxv), 
+               if(grp%%2==1) y else -y)
+               newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+               newdata[c(1,nrow(newdata)-1,nrow(newdata)), 'x'] <- round(newdata[1, 'x']) 
+               if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+               stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <= 1))
+    quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+    aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+    aesthetics$alpha <- rep(1, nrow(quantiles))
+    both <- cbind(quantiles, aesthetics)
+    quantile_grob <- GeomPath$draw_panel(both, ...)
+    ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+  }
+  else {
+    ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+  }
+})
+
+geom_split_violin <- function (mapping = NULL, 
+                               data = NULL, 
+                               stat = "ydensity", 
+                               position = "identity", ..., 
+                               draw_quantiles = NULL, 
+                               trim = TRUE, scale = "area", 
+                               na.rm = FALSE, 
+                               show.legend = NA, 
+                               inherit.aes = TRUE) {
+  layer(data = data, 
+        mapping = mapping, 
+        stat = stat, 
+        geom = GeomSplitViolin, 
+        position = position, 
+        show.legend = show.legend, 
+        inherit.aes = inherit.aes, 
+        params = list(trim = trim, 
+                      scale = scale, 
+                      draw_quantiles = draw_quantiles, 
+                      na.rm = na.rm, ...))
+}
+```
+
+#Nomal_epilepsy_pairwise_comparition 20230706
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+#epilepsy samples
+datE <- read.csv("P2P_epilepsy_protein_matrix_with_NA.csv", row=1)
+datE1 <- datE[,-grep("pool", colnames(datE))]
+datE2 <- datE1[!apply(datE1, 1, function(x){sum(is.na(x))>0.8*ncol(datE1)}), ] #6823 pros
+Esamples <- data.frame(samples=colnames(datE2))
+Esamples$region <- info$Gyrus[match(Esamples$samples, info$sample)]
+table(Esamples$region)
+ # Amygdala_Amyg      FrontalLobe Hippocampus_Hipp    OccipitalLobe     ParietalLobe     TemporalLobe 
+ #              19               10               22                3                8               38 
+rm(list = ls()[match(c('datE',"datE1"), ls())])
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+datExpr0 <- data.table::fread('HBA_prot_matrix_11746pros_2824samples_202200909.csv', stringsAsFactors = F, data.table = F, fill = T)
+rownames(datExpr0) <- datExpr0[,1]
+datExpr1 <- datExpr0[,-1]
+
+Hsamples <- data.frame(samples=colnames(datExpr1))
+Hsamples$pathology <- info$pathology[match(Hsamples$samples, info$sample)]
+Hsamples$matter <- info$W_G[match(Hsamples$samples, info$sample)]
+Hsamples1 <- Hsamples[which(Hsamples$pathology=="health" & Hsamples$matter=="G"), ]
+info$L_G <- paste0(info$Lobe, "_", info$Gyrus)
+Hsamples1$L_G <- info$L_G[match(Hsamples1$samples, info$sample)]
+
+e_region <- unique(Esamples$region)
+# "TemporalLobe"     "Hippocampus_Hipp" "Amygdala_Amyg"    "FrontalLobe"      "ParietalLobe"    "OccipitalLobe"
+
+#change the names of region
+Hsamples2<-NULL
+for(i in 1:length(e_region)){
+  d1<-Hsamples1[grep(e_region[i],Hsamples1$L_G),]
+  d1$L_G<- e_region[i]
+  Hsamples2<-rbind(Hsamples2,d1)
+}
+#the number of health samples in each region
+table(Hsamples2$L_G)
+# Amygdala_Amyg      FrontalLobe Hippocampus_Hipp    OccipitalLobe     ParietalLobe     TemporalLobe 
+#       10              369               47              118              178              195
+
+datExpr2 <- datExpr1[,Hsamples2$samples]
+datExpr3 <- datExpr2[apply(datExpr2, 1, function(x){sum(!is.na(x))>0}), ]
+# setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+# save(datExpr3, file="health_data_with_NA_for_WGCNA_11054_917.RData")
+datExpr3 <- datExpr2[!apply(datExpr2, 1, function(x){sum(is.na(x))>0.8*ncol(datExpr2)}), ] #5550 pros
+
+datE2$pro <- rownames(datE2)
+datExpr3$pro <- rownames(datExpr3)
+datEH <- merge(datE2, datExpr3, by="pro", all=T)  #7131
+rownames(datEH) <- datEH[,1]
+datEH <- datEH[,-1]
+
+# input normolized abundance 
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+df_nor<-data.table::fread('HBA_pro_matrix_new_epilepsy_nor_data_old_healthy_nor_data.csv',data.table = F)
+rownames(df_nor)<-df_nor[,2]
+df_nor<-df_nor[,-c(1,2)]
+
+comPro <- intersect(rownames(datEH), rownames(df_nor))
+
+datEHNor <- df_nor[comPro, colnames(datEH)] #7115*1017
+
+Hsamples3 <- Hsamples2[,c(1,4)]
+colnames(Hsamples3)[2] <- "region"
+EHsamples <- rbind(Esamples, Hsamples3)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+save(EHsamples, file="samples_information_for_comparing_E_H.RData")
+write.csv(datEHNor, "datEpr_for_comparing_epilepsy_health_delet_0.8NA_with_normolized_data.csv")
+save(datEHNor, file = "datEpr_for_comparing_epilepsy_health_delet_0.8NA_with_normolized_data.RData")
+
+```
+#fold change and wilcox.test
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+load(file="samples_information_for_comparing_E_H.RData")
+load(file="datEpr_for_comparing_epilepsy_health_delet_0.8NA_with_normolized_data.RData")
+
+EHsamples$pathology <- info$pathology[match(EHsamples$samples, info$sample)] 
+
+e_region<-unique(EHsamples$region)
+
+datFCP_all <- data.frame(pro="1")
+for(i in 1:length(e_region)){
+  E <- datEHNor[, EHsamples$samples[which(EHsamples$region==e_region[i] & EHsamples$pathology=="epilepsy")]]
+  H <- datEHNor[, EHsamples$samples[which(EHsamples$region==e_region[i] & EHsamples$pathology=="health")]]
+  
+  de_mean <- apply(E, 1, function(x){mean(x)})
+  dh_mean <- apply(H, 1, function(x){mean(x)})
+  
+  FC <- de_mean-dh_mean
+  
+  pvalue <- c()
+  for(j in 1:nrow(E)){
+    pvalue0 <- wilcox.test(unlist(E[j,]), unlist(H[j,]), paired = F)$p.value
+    pvalue <- c(pvalue, pvalue0)
+  }
+  padj<-p.adjust(pvalue, method = "BH")
+  
+  datFCP <- data.frame(log2_FC=FC, pvalue=pvalue, padj=padj, row.names = rownames(E))
+  
+  #火山图
+  library(ggrepel)
+
+  datFCP$group <- ifelse(((datFCP$padj < 0.05 & datFCP$log2_FC > log2(3))|(datFCP$padj < 0.05 & datFCP$log2_FC <(-log2(3)))),
+                         ifelse(datFCP$log2_FC > log2(3), "Up-regulated", "Down-regulated"),
+                         "No-Significant")
+
+  datFCP$group <- factor(datFCP$group, levels = c("Down-regulated", "No-Significant", "Up-regulated"))
+  
+  p <- ggplot(data = datFCP, aes(x = log2_FC, y = -log10(padj))) +
+   geom_point(size=1, alpha = 1, aes(color = group)) +
+   theme_classic() +
+   theme(panel.border = element_rect(fill=NA,color="black", size=0.5, linetype="solid"))+
+   # scale_x_continuous(expand = c(0.15, 0.15)) +
+   ylab("-log10(P.value)") +
+   xlab("log2(FC)")+
+   ggtitle(e_region[i])+
+   # scale_fill_manual(values = c("#7FAC9B", "#C6CBCB", "#D7765E")) +
+   scale_color_manual(values = c("#7FAC9B", "#C6CBCB", "#D7765E")) +
+   geom_hline(yintercept = -log10(0.05),lty=4,col="black",lwd=0.4) +
+   geom_vline(xintercept = c(-log2(3), log2(3)),lty=4,col="black",lwd=0.4)
+   assign(e_region[i],p)
+  
+  colnames(datFCP) <- paste0(e_region[i], "_", colnames(datFCP))
+
+  datFCP_all <- cbind(datFCP_all, datFCP)
+}
+
+datFCP_all <- datFCP_all[,-1]
+datFCP_group <- datFCP_all[, grep("group", colnames(datFCP_all))]
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+write.csv(datFCP_group, "epilepsy_vs_health_wilcox_dysregulated_group.csv")
+write.csv(datFCP_all, "epilepsy_vs_health_wilcox_log2FC_pvalue_padj_dysregulated_group.csv")
+
+library(ggpubr)
+pdf("epilepsy_vs_health_wilcox_Volcanic_map.pdf", width=18, height=4)
+ggarrange(TemporalLobe,
+          Hippocampus_Hipp,
+          Amygdala_Amyg,
+          FrontalLobe,
+          ParietalLobe,
+          OccipitalLobe,
+          ncol = 6,nrow = 1)  #,widths = c(1,2),heights = c(1,1,2)
+dev.off()
+
+#the number of dysregulated proteins
+Pro_num <- apply(datFCP_group, 2, function(x){unlist(table(x))}) 
+Pro_num1 <- melt(Pro_num)
+colnames(Pro_num1) <- c("group", "region", "num")
+Pro_num1$region <- gsub("_group", "", Pro_num1$region)
+
+Pro_num1$group <- factor(Pro_num1$group, levels = c("No-Significant", "Up-regulated", "Down-regulated"))
+ggplot(Pro_num1,aes(x=region, y=num, fill=group)) +
+ geom_bar(stat="identity", position='stack',width = 0.8, color='white')+
+ geom_text(aes(label=num),size=3, position = 'stack', vjust=3)+
+ scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9"))+
+ theme_bw()
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+ggsave("the number of dysregulated proteins.pdf", width=8, height = 5)
+
+#UpSetR
+datFCP_group1 <-  apply(datFCP_group, 2, function(x){as.character(x)})
+rownames(datFCP_group1) <- rownames(datFCP_group)
+for(i in 1:length(e_region)){
+  region<-row.names(datFCP_group1)[which(datFCP_group1[,i] != "No-Significant")]
+  assign(e_region[i],region)
+}
+region_pro<-list(FrontalLobe,ParietalLobe,Hippocampus_Hipp,OccipitalLobe,TemporalLobe,Amygdala_Amyg)
+inter<-as.data.frame(Reduce(intersect,region_pro))  #908 proteins (intersect(6 region))
+# union <- as.data.frame(Reduce(union,region_pro)) #3983
+colnames(inter)<-"proteins"
+# TL_unique<-setdiff(TL_G,Reduce(union,list(Hipp_G,Amyg_G,FL_G,PL_G,OL_G)))
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+write.csv(inter,"all_e_region_intersection_908proteins20230707.csv")
+
+datFCP_group1[datFCP_group1 != "No-Significant"] <- 1
+datFCP_group1[datFCP_group1 == "No-Significant"] <- 0
+colnames(datFCP_group1) <- gsub("_group", "", colnames(datFCP_group1))
+datFCP_group2 <-  apply(datFCP_group1, 2, function(x){as.numeric(x)})
+rownames(datFCP_group2) <- rownames(datFCP_group1)
+datFCP_group2 <- as.data.frame(datFCP_group2)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+pdf(file="upset_overlap.pdf", width=14, height = 8)
+upset(datFCP_group2,mb.ratio = c(0.55,0.45),nsets = 6,nintersects=100,number.angles = 30,
+      point.size = 4,line.size = 1,mainbar.y.label = "intersect_number",sets.x.label = "pro_number",
+      text.scale = c(2,2,2,2,2,2),order.by = c('freq', 'degree'), decreasing = c(TRUE, TRUE),
+      queries = list(list(query = intersects, params = c("FrontalLobe","ParietalLobe","Hippocampus_Hipp","OccipitalLobe","TemporalLobe","Amygdala_Amyg"), 
+      color = 'darksalmon')))
+```
+#sankey diagram
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+drug_target <- read.csv("4_2_all_human_drug_target_sep.csv",header = T,stringsAsFactors = F)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+epilepsy <- read.csv("epilepsy_vs_health_wilcox_dysregulated_group.csv",header = T,stringsAsFactors = F,row=1)
+epilepsy[epilepsy=="No-Significant"] <- 0
+epilepsy[epilepsy!=0] <- 1
+colnames(epilepsy) <- gsub("_group", "", colnames(epilepsy))
+
+epilepsy$uniprot <- sapply(row.names(epilepsy), function(x){str_split(x, "-")[[1]][1]})
+epilepsy1 <- epilepsy[order(epilepsy$uniprot), ] 
+pro <- unique(epilepsy1$uniprot)
+
+epilepsy2 <- NULL
+for(i in 1:length(pro)){
+  d1 <- epilepsy1[which(epilepsy1$uniprot==pro[i]), -ncol(epilepsy1)]
+  if(nrow(d1)==1){
+    epilepsy2 <- rbind(epilepsy2, d1)
+  }else{
+    d2 <- as.data.frame(t(d1))
+    d2$sum <- apply(d2, 1, function(x){sum(as.numeric(x))}) 
+    d3 <- as.data.frame(t(d2[,ncol(d2)]))
+    colnames(d3) <- rownames(d2)
+    rownames(d3) <- pro[i]
+    epilepsy2 <- rbind(epilepsy2, d3)
+  }
+}
+epilepsy3 <- as.data.frame(t(apply(epilepsy2, 1, function(x){as.numeric(x)})))
+colnames(epilepsy3) <- colnames(epilepsy2)
+epilepsy3[epilepsy3>1] <- 1
+epilepsy3$sum <- apply(epilepsy3,1,function(x){sum(x)})
+epilepsy3$uniprot <- sapply(row.names(epilepsy3), function(x){str_split(x, "-")[[1]][1]})
+epilepsy3 <- epilepsy3[-which(epilepsy3$sum==0), ]
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+known_drug <- read.csv("4_1_Drugbank_list.csv",header = T,stringsAsFactors = F)
+know_drug_match <- unique(known_drug[,c(2,4)])
+know_drug_match <- know_drug_match[-which(know_drug_match$status=="Withdrawn"),]
+know_drug_match$sum <- epilepsy3$sum[match(know_drug_match$uniprot,epilepsy3$uniprot)]
+know_drug_match <- know_drug_match[!is.na(know_drug_match$sum),] #84
+length(unique(know_drug_match$uniprot)) #62
+
+epilepsy_match <- epilepsy3[-which(epilepsy3$uniprot %in% unique(know_drug_match$uniprot)),c(8,7)]
+epilepsy_match$status <- rep("Unknowns",nrow(epilepsy_match)) #不是癫痫drug targets的差异蛋白 #3843
+
+drug_target1 <- drug_target[, c("UniProt.Accessions", "Type.1")]
+epilepsy_match2 <- epilepsy_match[which(epilepsy_match$uniprot %in% unique(drug_target1$UniProt.Accessions)),] #1099
+
+data1 <- rbind(know_drug_match,epilepsy_match2)
+length(unique(data1$uniprot)) 
+#1161 dysregulated proteins are drug targets (containing epiepsy and other drug targets)
+data1[is.na(data1)] <- 0
+data1$type <- drug_target$Type.1[match(data1$uniprot,drug_target$UniProt.Accessions)]
+#summary
+#epilepsy drug targets: 62
+#unknown drug targets: 1099
+#dysregulated proteins are drug targets (containing epiepsy and other drug targets): 1161
+table(data1$status)
+       # Approved    Experimental Investigational        Unknowns 
+       #       57              12              15            1099 
+table(data1$type)
+       #           enzyme    epigenetic regulator             ion channel       membrane receptor 
+       #              656                      16                      73                      24 
+       # other categories other cytosolic protein        secreted protein    transcription factor 
+       #               47                      24                      20                       5 
+       #      transporter   unclassified proteins  SUM
+       #               30                     284  1179
+
+data2 <- data1[,c(1,4,3)]
+data_pic <- as.data.frame(table(data2))
+# write.csv(data_pic,"sankey_freq20220721.csv")
+
+# ----sankey-------------------------------------------------------------------------
+# install.packages("ggforce")
+library(ggforce)
+data_pic$sum <- as.character(data_pic$sum)
+data_pic <- gather_set_data(data_pic, 1:3)
+data_pic$x <- as.character(data_pic$x)
+data_pic$x[data_pic$x=="1"] <- "Drug"
+data_pic$x[data_pic$x=="2"] <- "Type"
+data_pic$x[data_pic$x=="3"] <- "Region"
+
+ggplot(data_pic, aes(x, id = id, split = y, value = Freq)) +
+  geom_parallel_sets(aes(fill = status), alpha = 1, axis.width = 0.1) +
+  geom_parallel_sets_axes(axis.width = 0.2,fill="white",color="grey") +
+  geom_parallel_sets_labels(colour = 'black',angle = 0,size=3) +
+  theme_bw()+
+  scale_fill_manual(values=c("#BB796F", "#AED8E0", "#E8B446", "#B2B8D6"))
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+ggsave("Sankey_diagram_drug.pdf", width=16, height = 10)
+```
+
+#pathway barplot (all_e_region_intersection_proteins)
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+pathway<-data.table::fread('all_e_region_intersection_IPA_top10_pathways.csv')
+path <- pathway[order(pathway$log10_p_value, decreasing = T), ]
+library(forcats)
+path$Canonical_Pathways <- fct_inorder(as.factor(path$Canonical_Pathways))
+
+ggplot(path,aes(x = log10_p_value, y= reorder(Canonical_Pathways,-log10_p_value, decreasing=T), fill = Ratio))+  #x=reorder()
+  geom_bar(stat = 'identity', 
+           position = position_dodge(width=0.9),
+           width = 0.7,
+           )+        #color="#AAABD3"
+  theme_bw(base_size = 12)+
+  # scale_fill_continuous(low = "white", high = "#39b593", mitype = "viridis")+  #viridis gradient
+  # scale_fill_gradientn(colours = c("#c2f9e8", "#39b593"))+
+  scale_fill_gradientn(colours = c("#EEC8BD", "#D28B73"))+
+  # ggtitle("positive correlation")+
+  ggtitle("")+
+  theme(plot.title = element_text(hjust = 0.5))+
+  ylab("Canonical Pathways")+xlab("-log10(p value)")
+
+ggsave("all_e_region_intersection_top10_pathways.pdf",width=15, height = 10)
+
+```
+
+#WGCNA 20230711
+```{r}
+#data with NA-----
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+datE <- read.csv("P2P_epilepsy_protein_matrix_with_NA.csv", row=1)
+datE1 <- datE[,-grep("pool", colnames(datE))]
+datE2 <- datE1[apply(datE1, 1, function(x){sum(!is.na(x))>0}), ]
+datE2$pro <- rownames(datE2)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="health_data_with_NA_for_WGCNA_11054_917.RData")
+datExpr3$pro <- rownames(datExpr3)
+
+datcom <- merge(datE2, datExpr3, by="pro", all=T)
+rownames(datcom) <- datcom$pro
+datcom <- datcom[,-1]
+datcom1 <- datcom[apply(datcom, 1, function(x){sum(!is.na(x))>0.5*ncol(datcom)}), ] #4411
+
+#normalization data------
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+df_nor<-data.table::fread('HBA_pro_matrix_new_epilepsy_nor_data_old_healthy_nor_data.csv',data.table = F)
+rownames(df_nor) <- df_nor$samples
+df_nor <- df_nor[,-c(1,2)]
+compro <- intersect(rownames(datcom1), rownames(df_nor)) #4411
+datExpr <- df_nor[rownames(datcom1), colnames(datcom1)] #4411 proteins * 1017 samples 
+
+# setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+# load(file="datExpr_4411proteins_1017_samples.RData")
+
+#delete outlier samples-----
+datExpr1 <- as.data.frame(t(datExpr))
+set.seed(1)
+sampleTree = hclust(dist(datExpr1), method = "average") #average complete
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pdf(file = "sampleClustering_cuheight_average.pdf", width = 12, height = 9)
+par(cex = 0.4)
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 0.5,
+     cex.axis = 1.5, cex.main = 2)
+#there are not outlier samples
+
+# Plot a line to show the cut
+abline(h = 300, col = "red")
+
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 300, minSize = 10)
+table(clust)
+# clust
+#    0    1 
+#    4  1013 
+# clust 1 contains the samples we want to keep.
+rownames(datExpr1)[clust==0]  # [1] "be6_76"    "b13_193"   "b2_30"     "b2_30_rep"
+keepSamples = (clust==1)
+datExpr = as.data.frame(datExpr1[keepSamples, ])  #1013 samples + 4411 proteins
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+save(datExpr, file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+```
+
+
+#=====================================================================================
+#  I. Network analysis of control and epilepsy expression data in grey matter
+#=====================================================================================
+
+#=====================================================
+#  Data input, cleaning and pre-processing
+#=====================================================
+
+#  Loading expression data and sample information
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+info1 <- info[grep("epilepsy", info$pathology),]
+# info1$L_G <- paste0(info1$Lobe, "_", info1$Gyrus)
+# region <- unique(info1$L_G)
+# Num <- NULL
+# for(i in 1:length(region)){
+#   d1 <- info1[grep(region[i], info1$L_G),]
+#   num0 <- data.frame(region=region[i],num=length(unique(d1$Donor_ID)))
+#   Num <- rbind(Num, num0)
+# }
+datExpr0 <- data.table::fread('HBA_prot_matrix_11746pros_2824samples_202200909.csv', stringsAsFactors = F, data.table = F, fill = T)
+datExpr0 <- data.frame(datExpr0, row.names = "V1")
+datExpr1<-as.data.frame(t(datExpr0))
+
+datExpr1$matter<-info$W_G[match(rownames(datExpr1),info$sample)]
+unique(datExpr1$matter) #"G" "W" NA
+datExpr1<-datExpr1[-grep("W",datExpr1$matter),]
+datExpr1<-datExpr1[!is.na(datExpr1$matter),]
+datExpr1<-datExpr1[,-ncol(datExpr1)]
+
+info$L_G<-paste(info$Lobe,seq="_",info$Gyrus)
+e_region<-unique(info$L_G[grep("epilepsy",info$pathology)])
+e_region<-c("TemporalLobe","Hippocampus_Hipp","Amygdala_Amyg","FrontalLobe","ParietalLobe","OccipitalLobe")
+
+datExpr1$L_G<-info$L_G[match(rownames(datExpr1),info$sample)]
+datExpr1$pathology<-info$pathology[match(rownames(datExpr1),info$sample)]
+
+datExpr2<-NULL
+for(i in 1:length(e_region)){
+  d1<-datExpr1[grep(e_region[i],datExpr1$L_G),]
+  d1$L_G<- e_region[i]
+  datExpr2<-rbind(datExpr2,d1)
+}
+
+#the numbers of health and epilepsy samples
+# num<-rbind()
+# for(i in 1:length(e_region)){
+#   d1<-datExpr1[grep(e_region[i],datExpr1$L_G),]
+#   num1<-data.frame(health=sum(grepl("health",d1$pathology)),epilepsy=sum(grepl("epilepsy",d1$pathology)))
+#   rownames(num1)<-e_region[i]
+#   num<-rbind(num,num1)
+# }
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+# write.csv(num,"the number of proteins between health and epilepsy samples.csv")
+
+```
+
+# Checking data for excessive missing values and identification of outlier microarray samples
+
+#https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/
+
+```{r}
+d1<-datExpr2
+d2<-d1[,-c(ncol(d1),ncol(d1)-1)]
+d3<-as.data.frame(t(d2))
+d3<-d3[apply(d3,1,function(x){sum(!is.na(x))>0}),]
+# d3$pro<-sapply(rownames(d3),function(x){str_split(x,"-")[[1]][1]})
+# d4<-melt(d3,id="pro")
+# d5<-reshape2::dcast(d4, pro~variable, mean, na.rm=T)
+# #d3$pro[duplicated(d3$pro)]
+# d5<-data.frame(d5,row.names = "pro")
+  
+d6 <- as.data.frame(t(d3))
+d7<-d6[,apply(d6,2,function(x){sum(!is.na(x))>0.50*nrow(d6)})]  #4314
+```
+
+# input normolized abundance 
+```{r}  
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+df_nor<-data.table::fread('HBA_prot_matrix_normolized_20220811.csv',data.table = F)
+rownames(df_nor)<-df_nor[,1]
+df_nor<-df_nor[,-1]
+# df_nor<-as.data.frame(t(df_nor))
+# df_nor[df_nor<0]<-min(df_nor[df_nor>0])/2 
+
+# s<-lapply(colnames(d7),function(x){grep(x,rownames(df_nor))})
+# s_order<-c()
+# for(j in 1:length(s)){
+#   s1<-s[[j]]
+#   s_order<-c(s_order,s1)
+# }
+# d8<-df_nor[s_order,rownames(d7)]
+# 
+# d8$pro<-sapply(rownames(d8),function(x){str_split(x,"-")[[1]][1]})  
+# d9<-melt(d8,id="pro")
+# d9$value<-as.numeric(d9$value)
+# d10<-reshape2::dcast(d9, pro~variable, mean, na.rm=T)
+# #d3$pro[duplicated(d3$pro)]
+# d10<-data.frame(d10,row.names = "pro")
+d10 <- df_nor[rownames(d7), colnames(d7)]
+library(WGCNA)
+#if there are any obvious outliers.
+datExpr0<-d10  #datExpr0 col-pro row-sample
+set.seed(1)
+sampleTree = hclust(dist(datExpr0), method = "average")
+# Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+# The user should change the dimensions if the window is too large or too small.
+sizeGrWindow(12,9)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+pdf(file = "sampleClustering_cuheight.pdf", width = 12, height = 9)
+#file = paste(e_region[i],seq="_","sampleClustering_250.pdf"
+par(cex = 0.4)
+par(mar = c(0,4,2,0))
+plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 0.5,
+     cex.axis = 1.5, cex.main = 2)
+# Plot a line to show the cut
+abline(h = 300, col = "red") 
+
+# Determine cluster under the line
+clust = cutreeStatic(sampleTree, cutHeight = 300, minSize = 10)
+table(clust)  #PL: 6 epilepsy + 9 health  TL: 36 epilepsy 37 health
+# clust 1 contains the samples we want to keep.
+rownames(datExpr0)[clust==0]  # "be6_76""b13_193""b2_30""b2_30_rep"  
+keepSamples = (clust==1)
+datExpr = as.data.frame(datExpr0[keepSamples, ])  #1002 samples + 4395 proteins
+
+# -----------------------------------------------------------------------------------
+#  Loading sample information
+# -----------------------------------------------------------------------------------
+traitData = info
+
+# select columns that hold information we need.
+allTraits = traitData[, c(4, 15, 18)]
+
+# Form a data frame analogous to expression data that will hold the clinical traits.
+datTraits = allTraits[match(rownames(datExpr), allTraits$sample), ]
+rownames(datTraits) = datTraits[, 1]
+datTraits<-datTraits[,-1]
+length<-apply(datTraits,2,function(x){length(unique(x))})
+datTraits1<-datTraits
+for(k in 1:ncol(datTraits1)){
+ for(j in 1:length(unique(datTraits1[,k]))){
+   datTraits1[,k][datTraits1[,k]==unique(datTraits1[,k])[j]]<-j
+}
+}
+  
+# visualize how the clinical traits relate to the sample dendrogram
+# Re-cluster samples
+sampleTree2 = hclust(dist(datExpr), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+datTraits2<-apply(datTraits1,2,function(x){as.numeric(x)})
+rownames(datTraits2)<-rownames(datTraits1)
+
+traitColors = labels2colors(datTraits2)
+rownames(traitColors)<-rownames(datTraits1)
+
+colnames(traitColors)<-colnames(datTraits)
+colnames(traitColors)[2]<-"BBA"
+
+# Plot the sample dendrogram and the colors underneath.
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+pdf(file = "Plots_sampleinfo_Clustering_cuthight_300.pdf", width = 12, height = 9)
+#paste(e_region[i],seq="_","Plots_sampleinfo_Clustering.pdf"
+plotDendroAndColors(sampleTree2, traitColors,
+                    groupLabels = names(datTraits2),
+                    main = "Sample dendrogram and trait heatmap",
+                    dendroLabels=FALSE, hang=0.03, addGuide=TRUE, 
+                    guideHang=0.05)
+
+# datExpr_PL<-as.data.frame(datExpr)
+# datExpr_TL<-as.data.frame(datExpr)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+save(datExpr, file = "datExpr_row1002_col4395.RData")
+
+```
+
+#========================================================
+#Step-by-step network construction and module detection
+#========================================================
+#https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/Tutorials/FemaleLiver-02-networkConstr-man.pdf
+
+#data
+```{r}
+library(WGCNA)
+
+options(stringsAsFactors = FALSE)
+enableWGCNAThreads(2) 
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+lnames = load(file = "datExpr_row1002_col4395.RData")  #TL_PL_datExpr.RData
+# sum(grepl("be",rownames(datExpr)))  #epilepsy 88
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+info$L_G<-paste(info$Lobe,seq="_",info$Gyrus)
+
+sample<-data.frame(SampleName=rownames(datExpr))
+sample$pathology<-info$pathology[match(sample$SampleName,info$sample)]
+sample$L_G<-info$L_G[match(sample$SampleName,info$sample)]
+health<-sample[grep("health",sample$pathology),]
+epilepsy<-sample[grep("epilepsy",sample$pathology),]
+epilepsy$patient <- info$Donor_ID[match(epilepsy$SampleName, info$sample)]
+
+e_region<-c("TemporalLobe","Hippocampus_Hipp","Amygdala_Amyg","FrontalLobe","ParietalLobe","OccipitalLobe")
+NumHealth<-NULL
+for(i in 1:length(e_region)){
+  d1<-health[grep(e_region[i],health$L_G),]
+  num<-data.frame(sample_number=nrow(d1))
+  rownames(num)<-e_region[i]
+  NumHealth<-rbind(NumHealth,num)
+}
+NumEpilepsy<-NULL
+for(i in 1:length(e_region)){
+  d1<-epilepsy[grep(e_region[i],epilepsy$L_G),]
+  num<-data.frame(sample_number=nrow(d1))
+  rownames(num)<-e_region[i]
+  NumEpilepsy<-rbind(NumEpilepsy,num)
+}
+```
+
+# 20230711 Choosing the soft-thresholding power: analysis of network topology
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+load(file="samples_information_for_comparing_E_H.RData")
+
+#the number of samples
+# setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+# info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+# rownames(EHsamples) <- EHsamples$samples
+# EHsamples1 <- EHsamples[rownames(datExpr),]
+# EHsamples1$pathology <- info$pathology[match(EHsamples1$samples, info$sample)]
+# ES <- EHsamples1[which(EHsamples1$pathology=="epilepsy"), ]
+# HS <- EHsamples1[which(EHsamples1$pathology=="health"), ]
+# table(ES$region)
+# table(HS$region)
+
+
+library(WGCNA)
+nSets<-1
+setLabels = "all G samples"          #c("Temporal Lobe", "Parietal Lobe")
+shortLabels = "GS"                   #c("TL", "PL")
+multiExpr = vector(mode = "list", length = nSets)
+multiExpr[[1]] = list(data = datExpr)               #list(data = datExpr_TL)
+# multiExpr[[2]] = list(data = datExpr_PL)
+checkSets(multiExpr)
+
+# Choose a set of soft-thresholding powers
+powers = c(seq(4,10,by=1), seq(12,30, by=2))
+# Initialize a list to hold the results of scale-free analysis
+powerTables = vector(mode = "list", length = nSets)
+# Call the network topology analysis function for each set in turn
+for (set in 1:nSets){
+     powerTables[[set]] = list(data = pickSoftThreshold(multiExpr[[set]]$data,      
+                                                        powerVector=powers,
+                                                        verbose = 2)[[2]])
+     collectGarbage()
+# Plot the results:
+     colors = c("black", "red")
+# Will plot these columns of the returned scale free analysis tables
+     plotCols = c(2,5,6,7)
+     colNames = c("Scale Free Topology Model Fit", "Mean connectivity", "Median connectivity", "Max connectivity")
+# Get the minima and maxima of the plotted points
+     ylim = matrix(NA, nrow = 2, ncol = 4)}
+for (set in 1:nSets){
+     for (col in 1:length(plotCols)){
+          ylim[1, col] = min(ylim[1, col], powerTables[[set]]$data[, plotCols[col]], na.rm = TRUE)
+          ylim[2, col] = max(ylim[2, col], powerTables[[set]]$data[, plotCols[col]], na.rm = TRUE)
+}
+}
+# Plot the quantities in the chosen columns vs. the soft thresholding power
+sizeGrWindow(8, 6)
+par(mfcol = c(2,2));
+par(mar = c(4.2, 4.2 , 2.2, 0.5))
+cex1 = 0.7;
+for (col in 1:length(plotCols)) for (set in 1:nSets){
+    if (set==1){
+       plot(powerTables[[set]]$data[,1],         
+            -sign(powerTables[[set]]$data[,3])*powerTables[[set]]$data[,2],
+            xlab="Soft Threshold (power)",ylab=colNames[col],type="n", ylim = ylim[, col],
+            main = colNames[col])
+       addGrid()
+}
+    if (col==1){
+        text(powerTables[[set]]$data[,1],   
+             -sign(powerTables[[set]]$data[,3])*powerTables[[set]]$data[,2],
+        labels=powers,cex=cex1,col=colors[set])
+}   else
+        text(powerTables[[set]]$data[,1], powerTables[[set]]$data[,plotCols[col]],
+        labels=powers,cex=cex1,col=colors[set]);
+    if (col==1){
+     legend("bottomright", legend = setLabels, col = colors, pch = 20) ;
+}   else
+    legend("topright", legend = setLabels, col = colors, pch = 20) ;
+}
+
+
+```
+
+# Correlating general network properties
+```{r}
+#https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/JMiller/Tutorial%20document.pdf
+# A<-TL
+# B<-PL
+#data row-pro col-sample
+datExpr_A<-as.data.frame(t(datExpr_TL))
+datExpr_B<-as.data.frame(t(datExpr_PL))
+
+softPower = 8                       #selet control TL+PL: 8    all control: 5/6/7
+rankExprA= rank(rowMeans(datExpr_A)) 
+rankExprB= rank(rowMeans(datExpr_B)) 
+
+rankConnA= rank(softConnectivity(t(datExpr_A),type="signed",power=softPower)) 
+rankConnB= rank(softConnectivity(t(datExpr_B),type="signed",power=softPower)) 
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221009 all control") 
+pdf("generalNetworkProperties_power7.pdf", height=10, width=9) 
+par(mfrow=c(2,2)) 
+verboseScatterplot(rankExprA,rankExprB, xlab="Ranked Expression (A)", 
+ylab="Ranked Expression (B)") 
+verboseScatterplot(rankConnA,rankConnB, xlab="Ranked Connectivity (A)", 
+ylab="Ranked Connectivity (B)") 
+
+```
+
+# 20230712 Co-expression similarity and adjacency
+```{r}
+library(WGCNA)
+softPower = 7    
+# datExpr_A<-as.data.frame(t(datExpr))
+adjacencyA = adjacency(datExpr, 
+                      power = softPower, #if (type=="distance") 1 else 6
+                      type = "signed", # "unsigned", "signed", "signed hybrid", "distance"
+                      corFnc = "bicor", 
+                      # corOptions = list(use = "p",method = "pearson"),#"use = 'p', method = 'spearman' / 'pearson'/ 'kendall'
+                      # distFnc = "dist", 
+                      # distOptions = "method = 'euclidean'",
+                      )
+# diag(adjacencyA)=0 #将对角线1变为0?
+
+# adjacencyB = adjacency(t(datExpr_B), 
+                      # power = softPower, 
+                      # type = "signed",
+                      # corFnc = "bicor", 
+                      # )
+# diag(adjacencyB)=0 
+
+## Test if network is scale-free
+connectivityA <- colSums(adjacencyA, na.rm = TRUE) - 1
+# png("ScaleFreeNess.png")
+scaleFreePlot(connectivityA)  #R^2=0.91
+
+
+```
+
+# 20230712 Topological Overlap Matrix (TOM)
+```{r}
+# Turn adjacency into topological overlap
+TOMA = TOMsimilarity(adjacencyA,
+                    TOMDenom = "mean",
+                    TOMType="signed")
+dissTOMA = 1-TOMA
+
+# TOMB = TOMsimilarity(adjacencyB,
+#                     TOMDenom = "mean",
+#                     TOMType="signed")
+# dissTOMB = 1-TOMB
+```
+
+# 20230712 Clustering using TOM
+```{r}
+# Call the hierarchical clustering function
+geneTreeA = hclust(as.dist(dissTOMA), method = "average")
+# geneTreeB = hclust(as.dist(dissTOMB), method = "average")
+# Plot the resulting clustering tree (dendrogram)
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221009 all control")
+# pdf("dendrogram.pdf",height=6,width=16) 
+par(mfrow=c(1,2)) 
+plot(geneTreeA,xlab="",sub="",main="Proteins clustering on TOM-based dissimilarity (A)", 
+labels=FALSE,hang=0.04)
+# plot(geneTreeB,xlab="",sub="",main="Proteins clustering on TOM-based dissimilarity (B)", 
+# labels=FALSE,hang=0.04)
+
+#determine modules based on data set A
+minModuleSize = 55  #60
+mColorh=NULL
+for (ds in 0:4){ 
+ tree = cutreeDynamic(dendro = geneTreeA,
+                      distM = dissTOMA,
+                      method = "hybrid",
+                      minClusterSize = minModuleSize, # (30-3*ds)
+                      pamRespectsDendro = TRUE,
+                      deepSplit = ds,
+                      verbose = 2,
+                      cutHeight = 0.995)  #0.99
+ mColorh=cbind(mColorh,labels2colors(tree))
+ # tree = cutreeHybrid(dendro = geneTreeA, pamStage=FALSE, 
+ #        minClusterSize = (40-3*ds), cutHeight = 0.99, 
+ #        deepSplit = ds, distM = dissTOMA) 
+ # mColorh=cbind(mColorh,labels2colors(tree$labels))
+} 
+# deepSplit (0:4) The higher the value (or if TRUE), the more and smaller clusters will be produced.
+apply(mColorh,2,function(x){length(unique(x))})
+#    6  8  8  8 10
+
+# pdf("Module_choices.pdf", height=10,width=25)
+plotDendroAndColors(geneTreeA, mColorh, paste("dpSplt =",0:4), main = "",dendroLabels=FALSE)
+
+dynamicColors = mColorh[,5] # (Chosen based on plot below) 
+table(dynamicColors)   #10
+    # black      blue     brown     green   magenta      pink    purple       red turquoise    yellow 
+    #   164       973       382       264        68       143        56       200      1831       330    
+module = cutreeDynamic(dendro = geneTreeA,
+                      distM = dissTOMA,
+                      method = "hybrid",
+                      minClusterSize = minModuleSize, # (30-3*ds)
+                      pamRespectsDendro = TRUE,
+                      deepSplit = 4,
+                      verbose = 2,
+                      cutHeight = 0.995)
+table(module)
+# module
+#    1    2    3    4    5    6    7    8    9   10 
+# 1831  973  382  330  264  200  164  143   68   56  
+
+# Plot the dendrogram and colors underneath
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221011 all G samples")
+# pdf("dynamic_modules.pdf",height=8,width=12)
+plotDendroAndColors(geneTreeA, dynamicColors, "Dynamic Tree Cut", dendroLabels=FALSE,                       
+                    hang=0.03, addGuide=TRUE, 
+                    guideHang=0.05, main="Gene dendrogram and module colors (A)") 
+# plotDendroAndColors(geneTreeB, dynamicColors, "Dynamic Tree Cut", dendroLabels=FALSE,                      hang=0.03, addGuide=TRUE, 
+#                     guideHang=0.05, main="Gene dendrogram and module colors (B)") 
+# dev.off() 
+```
+
+# 20230712 Merging of modules whose expression profiles are very similar
+```{r}
+#1
+# MEDissThres = 0.3
+# # abline(h=MEDissThres, col = "red")
+# #choose a height cut of 0.25, corresponding to correlation of 0.75
+# 
+# # Call an automatic merging function
+# merge = mergeCloseModules(t(datExpr_A), dynamicColors,
+#                           cutHeight = MEDissThres,
+#                           verbose = 3,
+#                           unassdColor="grey",
+#                           corFnc="cor",
+#                           corOptions = list(use = 'p', method = "spearman"),
+#                           equalizeQuantiles=FALSE,  #when many eigengenes (>=50)
+#                           quantileSummary = "mean",
+#                           )
+# mergedColors = merge$colors
+# table(mergedColors)
+
+#2 
+merge2 = moduleMergeUsingKME(
+                            datExpr, dynamicColors, ME = NULL,
+                            threshPercent = 100, mergePercent = 50,     
+                            reassignModules = TRUE,
+                            convertGrey = TRUE,
+                            omitColors = "grey",
+                            reassignScale = 0.1,  
+                            threshNumber = NULL
+                            )
+# The merged module colors
+mergedColors = merge2$moduleColors
+table(mergedColors)     #10
+    # black      blue     brown     green   magenta      pink    purple       red turquoise 
+    #   516       884       304       384        59       133       246       152      1733 
+a<-as.data.frame(table(mergedColors))
+a<-arrange(a, desc(Freq))
+mergedModuleGroup<-paste0("M",c(1:length(unique(mergedColors))))
+mergedColorsGroup<-a$mergedColors
+
+mergedModule<-mergedColors
+for(i in 1:length(mergedColorsGroup)){
+  mergedModule[which(mergedModule==mergedColorsGroup[i])]<-mergedModuleGroup[i]
+}
+table(mergedModule)
+# mergedModule
+#   M1   M2   M3   M4   M5   M6   M7   M8   M9 
+# 1733  884  516  384  304  246  152  133   59 
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+save(mergedModule, mergedColors, file="4411pro_mergedColors_mergedModule.RData")
+
+sizeGrWindow(12, 9)
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pdf(file = "Plots_proDendro.pdf", width = 12, height = 9)
+#paste(e_region[i],seq="_","Plots_proDendro.pdf")
+plotDendroAndColors(geneTreeA, cbind(dynamicColors, mergedColors),
+  c("Dynamic Tree Cut", "Merged dynamic"),
+  dendroLabels = FALSE, hang = 0.03,
+  addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# plotDendroAndColors(geneTreeB, mergedColors, "Dynamic Tree Cut", dendroLabels=FALSE,                      hang=0.03, addGuide=TRUE, 
+#                     guideHang=0.05, main="Gene dendrogram and module colors (B)")
+```
+
+# 20230712 module tree plot
+```{r}
+MEList = moduleEigengenes(datExpr, 
+                          nPC = 1,
+                          softPower = softPower,
+                          scale = TRUE,
+                          colors = module,
+                          verbose = 1)
+
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs)
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average")
+# Plot the result
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes",
+xlab = "", sub = "")
+
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# load(file="4314pro_mergedColors_mergedModule.RData")
+softPower = 7
+me_MEList = moduleEigengenes(datExpr, 
+                          nPC = 1,
+                          softPower = softPower,
+                          scale = TRUE,
+                          colors = mergedModule  , #mergedModule  mergedColors
+                          verbose = 1)
+merged_MEs = me_MEList$eigengenes
+colnames(merged_MEs)<-sapply(colnames(merged_MEs),function(x){str_split(x,"E")[[1]][2]})
+
+#for cell enrichment
+# mergedColors_NOgrey<-mergedColors[-grep("grey",mergedColors)]
+# datExpr_NOgrey<-datExpr[,-grep("grey",mergedColors)]
+# me_MEList_NOgrey = moduleEigengenes(datExpr_NOgrey, 
+#                           nPC = 1,
+#                           softPower = softPower,
+#                           scale = TRUE,
+#                           colors = mergedColors_NOgrey,
+#                           verbose = 1)
+# merged_MEs_NOgrey = me_MEList_NOgrey$eigengenes
+# colnames(merged_MEs_NOgrey)<-sapply(colnames(merged_MEs_NOgrey),function(x){str_split(x,"E")[[1]][2]})
+# 
+MEDiss_merged = 1-cor(merged_MEs)
+METree_merged = hclust(as.dist(MEDiss_merged), method = "average")
+
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# pdf("Clustering of merged module eigengenes for cell enrichment.pdf", width =5, height = 2.5 )
+plot(METree_merged, main = "Clustering of merged module eigengenes", xlab = "", sub = "")
+
+MergedMoudle<-c("M3", "M5", "M8", "M4", "M2", "M7", "M1", "M6", "M9")
+# 
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pdf(file = "Clustering of merged module eigengenes for cell enrichment.pdf", width =5, height = 2)
+plotDendroAndColors(METree_merged, unique(mergedColors), "Merged module", dendroLabels=NULL ,
+                    hang=0.03, addGuide=TRUE,
+                    guideHang=0.05)
+#module heatmap
+# ME_cor<-cor(merged_MEs_NOgrey,method="pearson")
+# pheatmap(ME_cor)
+# 
+# datModule<-datExpr[,-grep("grey",mergedColors)]
+# datModule<-datModule[,order(mergedColors_NOgrey)]
+# datModule<-apply(datModule,2,function(x){as.numeric(x)})
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221011 all G samples")
+# library(pheatmap)
+# pheatmap(datModule,cluster_row=F,cluster_col=F,file="datExproModule_heatmap.pdf",color = colorRampPalette(c( "white", "#FBF2CF","#FA7070"))(50))
+```
+
+# test the KME
+```{r}
+colors<-unique(dynamicColors)
+ratio<-rbind()
+for(k in 1:length(colors)){
+  d1<-t(datExpr[,which(dynamicColors==colors[k])])
+  cor<-apply(d1,1,function(x){cor(x,MEs[,grep(colors[k],colnames(MEs))],method="pearson")})
+  cor_ratio<-data.frame(ratio_over=round(sum(abs(cor)>0.5)/length(cor),2), 
+                        num_over=sum(abs(cor)>0.5), num_module=length(cor))
+  rownames(cor_ratio)<-colors[k]
+  ratio<-rbind(ratio,cor_ratio)
+}
+
+mecolors<-unique(mergedColors)
+merged_ratio<-rbind()
+for(k in 1:length(mecolors)){
+  d1<-t(datExpr[,which(mergedColors==mecolors[k])])
+  cor<-apply(d1,1,function(x){cor(x,merged_MEs[,grep(mecolors[k],colnames(merged_MEs))],method="pearson")})
+  cor_ratio<-data.frame(ratio_over=round(sum(abs(cor)>0.5)/length(cor),2),
+                        num_over=sum(abs(cor)>0.5), num_module=length(cor))
+  rownames(cor_ratio)<-mecolors[k]
+  merged_ratio<-rbind(merged_ratio,cor_ratio)
+}
+
+#module member-ship
+MEs<-MEs[rownames(datExpr),]
+datKME = signedKME(
+         datExpr,
+         MEs,
+         exprWeights = NULL,
+         MEWeights = NULL,
+         outputColumnName = "kME", 
+         corFnc = "cor", 
+         corOptions = "use = 'p', method='spearman'")
+num_KME<-data.frame(num=apply(datKME,2,function(x){sum(abs(x)>0.7)}))
+
+merged_MEs<-merged_MEs[rownames(datExpr),]
+datKME_merged = signedKME(
+         datExpr,
+         merged_MEs,
+         exprWeights = NULL,
+         MEWeights = NULL,
+         outputColumnName = "kME", 
+         corFnc = "cor", 
+         corOptions = "use = 'p', method='spearman'")
+num_KME_me<-data.frame(num=apply(datKME_merged,2,function(x){sum(abs(x)>0.7)}))
+
+```
+
+#20230712 (kME.intramodule among the top 20th percentile)
+```{r}
+# FilPro<-c()
+# topGenesKME = NULL 
+# for(k in 1:ncol(datKME)){
+#  FilPro0 = datKME[order(abs(datKME[,k]),decreasing = TRUE),]
+#  FilPro1 = rownames(FilPro0)[1:50]
+#  FilPro<-c(FilPro,FilPro1)
+#  topGenesKME<-cbind(topGenesKME, FilPro1)
+# }
+# length(unique(FilPro))
+
+#关键蛋白在多个模块中有重叠，在module内部进行筛选
+# colnames(merged_MEs)<-sapply(colnames(merged_MEs),function(x){str_split(x,"E")[[1]][2]})
+# mecolors<-mecolors[-grep("grey",mecolors)]
+
+corPro<-NULL
+cormodulePro<-c(1)
+cormodulePro_isoform <- c(1)
+topPro<-NULL
+topmodulePro<-c(1)
+datCorre<-NULL
+mergedModuleGroup<-paste0("M",c(1:length(unique(mergedColors))))
+for(k in 1:length(mergedModuleGroup)){
+  d1<-t(datExpr[,which(mergedModule==mergedModuleGroup[k])])
+  cor<-apply(d1,1,function(x){cor.test(x,merged_MEs[,which(colnames(merged_MEs)==mergedModuleGroup[k])],method="pearson")$estimate})
+  p.value<-apply(d1,1,function(x){cor.test(x,merged_MEs[,which(colnames(merged_MEs)==mergedModuleGroup[k])],method="pearson")$p.value})
+  p_adjust<-p.adjust(p.value,method="BH")
+  datCor<-data.frame(cor,p.value,p_adjust)
+  datCor$Module<-mergedModuleGroup[k]
+  datCorre<-rbind(datCorre, datCor)
+
+  SP<-abs(datCor$cor)>0.5 & datCor$p_adjust<0.05
+
+  corPro0<-datCor[SP,]
+  corPro0$pro<-rownames(corPro0)
+  corPro<-rbind(corPro,corPro0)
+
+  cormodulePro0<-data.frame(c(rownames(corPro0),rep(NA,(length(mergedModule)-length(rownames(corPro0))))))
+  colnames(cormodulePro0)<-mergedModuleGroup[k]
+  cormodulePro1 <- cormodulePro0
+  cormodulePro1[,1] <- sapply(cormodulePro1[,1], function(x){str_split(x,"-")[[1]][1]})
+  cormodulePro_isoform<-cbind(cormodulePro,cormodulePro0)
+  cormodulePro<-cbind(cormodulePro,cormodulePro1)
+
+  datCor1<-datCor[order(abs(datCor$cor),decreasing = TRUE),]
+  SP1<-datCor$p_adjust<0.05
+  topPro0 <- datCor1[SP1,][1:10,]
+  topPro0$module<-mergedModuleGroup[k]
+  topPro<-rbind(topPro,topPro0)
+
+  topmodulePro0<-data.frame(rownames(topPro0))
+  colnames(topmodulePro0)<-mergedModuleGroup[k]
+  topmodulePro<-cbind(topmodulePro,topmodulePro0)
+}
+
+cormodulePro<-cormodulePro[,-1] #cor_0.5
+cormodulePro_isoform <- cormodulePro_isoform[,-1]
+topmodulePro<-topmodulePro[,-1] #top0.25
+
+# num_module_0.5<-apply(cormodulePro,2,function(x){sum(!is.na(x))})
+# num_module_top10<-apply(topmodulePro,2,function(x){sum(!is.na(x))})
+
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# write.csv(datCorre, file = "datCorrelation_all_4314_module_pro.csv")
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+# write.csv(topPro,"9Modules_cor_padj_0.05_top10_select_proteins.csv")
+write.csv(corPro,"9Modules_KME_cor_over_0.5_select_proteins.csv")
+write.csv(cormodulePro,"9Modules_KME_cor_over_0.5_select_proteins_for_IPA_no_isoforms.csv")
+write.csv(cormodulePro_isoform,"9Modules_KME_cor_over_0.5_select_proteins_for_IPA_with_isoforms.csv")
+```
+
+#hub protein 
+```{r}
+Alldegrees1=intramodularConnectivity(adjacencyA, mergedColors)
+hub_protein<-rownames(Alldegrees1[order(Alldegrees1$kWithin),])[1:10] 
+hubs = chooseTopHubInEachModule(dataExpr, colorh=moduleColors, power=power, type=type) 
+```
+
+#20230712 module-Tsne/umap
+```{r}
+
+rownames(dissTOMA)<-colnames(datExpr)
+colnames(dissTOMA)<-colnames(datExpr)
+# # # 
+# datExprT<-as.data.frame(dissTOMA[corPro$pro,corPro$pro] )  #cor_0.5 [corPro$pro,corPro$pro]  top:0.25 topPro$pro
+# or
+datExprT<-dissTOMA[corPro$pro,corPro$pro]
+# or
+# datExprT<-t(datExpr[,corPro$pro])  #corPro$pro
+
+# # Tsne
+# set.seed(1)
+# datP<-Rtsne(datExprT, pca=TRUE, perplexity=30, theta=0.1, pca_scale=F, is_distance=T) # is_distance=T
+# #expre/distance:is_distance=T   expression: t(datExprT)
+# datP1<-as.data.frame(datP$Y) #datTsne$Y
+
+# # umap
+# set.seed(1)
+# datP<-uwot::umap(datExprT, n_neighbors = 50,  #distance: as.dist /expre t(datExprT)
+#                  metric = "correlation", spread = 1,
+#                  min_dist = 0.1, verbose = TRUE, scale="z")  #t(datExprT) as.dist(datExprT)     metric="cosine" correlation  n_neighbors = 50 spread = 4, min_dist =0.04
+# datP1<-as.data.frame(datP)
+
+# cmds
+datP <- cmdscale(datExprT,2)   #distance
+datP1<-as.data.frame(datP)
+
+colnames(datP1)<-c("PC1","PC2")
+rownames(datP1)<-rownames(datExprT)
+datP1$group <- corPro$Module  #corPro$module  topPro$module 
+
+plotPC<-ggplot(datP1,aes(PC1,PC2,color=group))+  
+          geom_point(size=0.6)+ theme_bw() +
+          theme(panel.border = element_rect(fill=NA,color="black", size=1.5, linetype="solid"))+
+          #xlim(-3,4)+ylim(-4,4)+ 
+          geom_hline(yintercept = 0,lty=2,col="red",lwd=0.2) + 
+          geom_vline(xintercept = 0,lty=2,col="blue",lwd=0.2) +
+          theme(plot.title = element_text(hjust = 0.5)) + 
+          #geom_text(aes(label=rownames(umap2),vjust=1,hjust=-0.05,angle=30),show.legend=FALSE)+
+          labs(title = "merged_module_MDS_cor_0.5",color="module")+
+          scale_color_brewer(palette="Paired")
+plotPC
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+ggplot2::ggsave(plotPC,filename = "merged_module_MDS_dissTOMA_cor_0.5_9modules_Exprematrix.pdf", width=8, height=6)
+
+#cmds
+# cmd1=cmdscale(as.dist(dissTOMA[FilPro$pro,FilPro$pro]),2)
+# sizeGrWindow(7, 6)
+# par(mfrow=c(1,1))
+# plot(cmd1, col=as.character(FilPro$module), main="MDS plot",
+#       xlab="Scaling Dimension 1", ylab="Scaling Dimension 2")
+
+```
+
+# 20230712 cell-type enrichment
+```{r}
+# https://www.proteinatlas.org/humanproteome/single+cell+type
+# https://www.cnblogs.com/nxld/p/6067137.html
+# https://www.jianshu.com/p/f3ab7e3ece1f
+# BiocManager::install("clusterProfiler")
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+
+library(clusterProfiler)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+Cell<-data.table::fread('gene and brain cell type.csv', stringsAsFactors = F, data.table = F, fill = T)
+pro2gene<-data.table::fread('gene2protein_reviewed_uniprot_seprow.csv', stringsAsFactors = F, data.table = F, fill = T)
+#all pro
+# mergedColors_NOgrey<-mergedColors[-grep("grey",mergedColors)]
+# datExpr_NOgrey<-datExpr[,-grep("grey",mergedColors)]
+
+pro = colnames(datExpr)  #datExpr_NOgrey
+intModules = unique(mergedModule)   #dynamicColors  mergedColors
+#filter Pro
+# pro = FilPro$pro               #topPro$pro
+# intModules = unique(FilPro$module)
+
+CellType<-unique(Cell$type)
+
+all_data<-rbind()
+for(k in 1:length(intModules)){
+  #mergedColors
+  modPro<-pro[mergedModule==intModules[k]] #pro[FilPro$module==intModules[k]]#pro[mergedColors==intModules[k]]
+  modPro <- unique(sapply(modPro, function(x){str_split(x,"-")[[1]][1]}))
+  modPro2Gene<-pro2gene$Gene.Names[match(modPro,pro2gene$Entry)]
+  
+  TERM2GENE=data.frame(TERM=Cell$type,GENE=Cell$gene_name)
+  TERM2NAME=data.frame(TERM=Cell$type,NAME=Cell$type)
+  
+
+  g=try(enricher(gene=modPro2Gene, 
+             pvalueCutoff = 1,
+             pAdjustMethod = "BH", 
+             qvalueCutoff = 1,
+             minGSSize = 0,
+             maxGSSize = 2000,
+             TERM2GENE=TERM2GENE,
+             TERM2NAME=TERM2NAME))
+  if("NULL" %in% class(g)){next}else{g=g}
+ 
+  g_tmp=g@result
+  
+  GeneRatio<-sapply(g_tmp$GeneRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  BgRatio<-sapply(g_tmp$BgRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  g_tmp$enrichment=GeneRatio/BgRatio
+  #write.csv(as.data.frame( g_tmp@result), file=paste0(datanames[i],"_","Celltype_","enrichment.csv")) 
+  g_tmp$Module<-rep(intModules[k],nrow(g_tmp))
+  g_new=g_tmp[,c(1,5,6,7,10,11)]
+  all_data <- rbind(all_data, g_new)
+}
+
+library(pheatmap)
+
+# datFDR<-all_data[,c(1,5,2)]
+# datFDR$p.adjust<-as.numeric(datFDR$p.adjust)
+datFDR<-all_data[,c(1,6,2)] #pvalue 2 ; p-adj 3
+datFDR$pvalue<-as.numeric(datFDR$pvalue)
+datFDR<-reshape2::dcast(datFDR, ID~Module)
+datFDR<-data.frame(datFDR,row.names = "ID")
+MergedMoudle<-c("M3", "M5", "M8", "M4", "M2", "M7", "M1", "M6", "M9")
+datFDR<-datFDR[,MergedMoudle]
+datFDR<-datFDR[c(2,3,1,4,5,6),]
+
+
+datEn<-all_data[,c(1,6,5)]
+datEn$enrichment<-as.numeric(datEn$enrichment)
+datEn<-reshape2::dcast(datEn, ID~Module)
+datEn<-data.frame(datEn,row.names = "ID")
+datEn<-datEn[,MergedMoudle]
+datEn<-datEn[c(2,3,1,4,5,6),]
+
+tmp1<-as.data.frame(ifelse(t(datFDR) <= 0.05, "*", ""))
+tmp1[is.na(tmp1)]<-""
+tmp2<-as.data.frame(ifelse(tmp1 != "", round(t(datEn),2), ""))
+# tmp2<-round(t(datEn),2)
+tmp2[is.na(tmp2)]<-0
+
+tmp3<-cbind()
+for(i in 1:ncol(tmp2)){
+  d1<-paste0(tmp1[,i],"\n",tmp2[,i])
+  tmp3<-cbind(tmp3,d1)
+}
+rownames(tmp3)<-rownames(tmp2)
+colnames(tmp3)<-colnames(tmp2)
+tmp3<-t(tmp3[MergedMoudle,])
+
+datEn[is.na(datEn)]<-0
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pheatmap(datEn,#fontsize_col=10,fontsize_row=11,
+           fontsize = 1.5,
+           angle_col=45,
+           # annotation_col<-annotation_col,
+           # border_color="black",
+           show_rownames=T,show_colnames = T,
+           cluster_row=F,cluster_col=F,#scale="column",
+           # treeheight_row=15,treeheight_col=15,
+           main= "Cell-Type Enrichment",
+           #paste(e_region[i],seq="_","Cell-Type Enrichment"),#border_color=NA,
+           color = colorRampPalette(c("#FEF3F0","#E96B67"))(10),
+           border_color = "#DCDADC",
+           display_numbers = as.matrix(tmp3),
+           cellwidth = 10, cellheight = 4,
+           fontsize_number=1.5,
+           legend_breaks=c(0,1,2,3),
+           legend_labels=c("0","1 Enrichment( *** p value < 0.01 )","2","3"),
+           width=8,height=4,
+           filename = "Cell-Type Enrichment_9mergedmodule_pvalue_0.05_20230712.pdf")
+# paste(e_region[i],seq="_","Cell-Type Enrichment_all_control_Pro_11dynamicmodule.pdf")
+```
+
+# process enrichment
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures/20230531_brain_function_heatmap")
+FuncPro <- read.csv("data_function_protein_0.6_20230607.csv")
+FuncPro1 <- FuncPro[,c(3,2)]
+colnames(FuncPro1)[2] <- "pro_iso" 
+FuncPro1$pro_iso <- gsub("[.]", "-", FuncPro1$pro_iso)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+load(file="datExpr_row1002_col4395.RData")
+load(file="4395pro_mergedColors_mergedModule.RData")
+
+library(clusterProfiler)
+
+pro = colnames(datExpr)
+intModules = unique(mergedModule)
+# FunType<-unique(FuncPro1$func)
+
+all_data<-rbind()
+for(k in 1:length(intModules)){
+  #mergedColors
+  modPro<-pro[which(mergedModule==intModules[k])]
+  # modPro <- unique(sapply(modPro, function(x){str_split(x,"-")[[1]][1]}))
+  # modPro2Gene<-pro2gene$Gene.Names[match(modPro,pro2gene$Entry)]
+  
+  TERM2GENE=data.frame(TERM=FuncPro1$func,GENE=FuncPro1$pro_iso)
+  TERM2NAME=data.frame(TERM=FuncPro1$func,NAME=FuncPro1$func)
+  
+  ##开始富集分析
+  g=try(enricher(gene=modPro, 
+             pvalueCutoff = 100,
+             pAdjustMethod = "BH", 
+             qvalueCutoff = 100,
+             minGSSize = 0,
+             maxGSSize = 5000,
+             TERM2GENE=TERM2GENE,
+             TERM2NAME=TERM2NAME))
+  if("NULL" %in% class(g)){next}else{g=g}
+ 
+  g_tmp=g@result
+  
+  GeneRatio<-sapply(g_tmp$GeneRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  BgRatio<-sapply(g_tmp$BgRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  g_tmp$enrichment=GeneRatio/BgRatio
+  #write.csv(as.data.frame( g_tmp@result), file=paste0(datanames[i],"_","Celltype_","enrichment.csv")) #输出csv格式结果
+  g_tmp$Module<-rep(intModules[k],nrow(g_tmp))
+  g_new=g_tmp[,c(1,5,6,7,10,11)]
+  all_data <- rbind(all_data, g_new)
+}
+
+library(pheatmap)
+
+# datFDR<-all_data[,c(1,5,2)]
+# datFDR$p.adjust<-as.numeric(datFDR$p.adjust)
+datFDR<-all_data[,c(1,6,2)] #pvalue 2 ; p-adj 3
+datFDR$pvalue<-as.numeric(datFDR$pvalue)
+datFDR<-reshape2::dcast(datFDR, ID~Module)
+datFDR<-data.frame(datFDR,row.names = "ID")
+MergedMoudle<-c("M1", "M7", "M2", "M3", "M6", "M5", "M9", "M4", "M8")
+datFDR<-datFDR[,MergedMoudle]
+
+datEn<-all_data[,c(1,6,5)]
+datEn$enrichment<-as.numeric(datEn$enrichment)
+datEn<-reshape2::dcast(datEn, ID~Module)
+datEn<-data.frame(datEn,row.names = "ID")
+datEn<-datEn[,MergedMoudle]
+# datEn<-datEn[c(2,3,1,4,5,6),]
+
+tmp1<-as.data.frame(ifelse(t(datFDR) < 0.05, "***", "")) #pvalue 0.01 0.05 ; p-adj 0.05
+tmp1[is.na(tmp1)]<-""
+tmp2<-as.data.frame(ifelse(tmp1 != "", round(t(datEn),2), ""))
+# tmp2<-round(t(datEn),2)
+tmp2[is.na(tmp2)]<-0
+
+tmp3<-cbind()
+for(i in 1:ncol(tmp2)){
+  d1<-paste0(tmp1[,i],"\n",tmp2[,i])
+  tmp3<-cbind(tmp3,d1)
+}
+rownames(tmp3)<-rownames(tmp2)
+colnames(tmp3)<-colnames(tmp2)
+tmp3<-t(tmp3[MergedMoudle,])
+
+datEn[is.na(datEn)]<-0
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+pheatmap(datEn,#fontsize_col=10,fontsize_row=11,
+           fontsize = 3.5,
+           angle_col=45,
+           # annotation_col<-annotation_col,
+           # border_color="black",
+           show_rownames=T,show_colnames = T,
+           cluster_row=T,cluster_col=F,#scale="column",
+           # treeheight_row=15,treeheight_col=15,
+           main= "Functions-modules Enrichment",
+           #paste(e_region[i],seq="_","Cell-Type Enrichment"),#border_color=NA,
+           color = colorRampPalette(c("#F9EDF2","#D3659D","#875BA3"))(10),
+           border_color = "#DCDADC",
+           display_numbers = as.matrix(tmp3),
+           # cellwidth = 10, cellheight = 4,
+           fontsize_number=2.5,
+           legend_breaks=c(0,2,4,6,8,10,12),
+           legend_labels=c("0","2","4 Enrichment( *** p value < 0.05 )","6","8","10","12"),
+           width=8,height=4,
+           filename = "Functions-proteins Enrichment_9mergedmodule_p_0.05_20230620.pdf"
+         )
+# paste(e_region[i],seq="_","Cell-Type Enrichment_all_control_Pro_11dynamicmodule.pdf")
+```
+
+# 20230712 region enrichment
+```{r dysregulated proteins}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+# corPRO <- read.csv("9Modules_KME_cor_over_0.5_select_proteins.csv")
+# corPRO <- unique(corPRO$pro)
+
+module <- data.frame(pro=colnames(datExpr), mergedModule=mergedModule)
+module1 <- module
+# module1 <- module[match(corPRO, module$pro), ]
+
+datExpr <- datExpr[, module1$pro]
+mergedModule <- module1$mergedModule
+# write.csv(module, "4395_module_pro.csv")
+
+library(clusterProfiler)
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+# info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+REHpro <- read.csv(file="epilepsy_vs_health_wilcox_dysregulated_group.csv", row=1)
+
+# REHpro<-data.table::fread('1_epilepsy_pairwise_fc_3_select_4108proteins20230305.csv', stringsAsFactors = F, data.table = F, fill = T)
+# # REHpro$pro<-sapply(REHpro$V1,function(x){str_split(x,"_")[[1]][1]})
+# # REHpro[is.na(REHpro)]<-0
+# rownames(REHpro) <- REHpro$V1
+# REHpro <- REHpro[,-1]
+# REHpro1<-c(1)
+# for(i in 2:7){
+#   d1<-aggregate(REHpro[,i], by = list(REHpro$pro), FUN = max)
+#   d1<-data.frame(d1,row.names = "Group.1")
+#   colnames(d1)<-colnames(REHpro)[i]
+#   REHpro1<-cbind(REHpro1,d1)
+# }
+# REHpro1<-REHpro1[,-1]
+e_region<-colnames(REHpro)
+e_region <- gsub("_group", "", e_region)
+
+# REHpro1[REHpro1==0]<-NA
+REHpro1 <- REHpro
+regionPro<-NULL
+num_pro1<-c()
+for(i in 1:length(e_region)){
+  d1<-REHpro1[which(REHpro1[,i] != "No-Significant"),]
+  d2<-rownames(d1)[apply(d1,1,function(x){sum(x != "No-Significant")==1})]
+  regionPro0<-data.frame(pro=d2,region=e_region[i])
+  regionPro0$uniprot <- gsub("[.]","-",regionPro0$pro)                                       
+  #sapply(regionPro0$pro, function(x){str_split(x,"-")[[1]][1]})
+  regionPro<-rbind(regionPro,regionPro0)
+  num_pro0<-length(d2)
+  num_pro1<-c(num_pro1,num_pro0) #120 272 143 161  84 124
+}
+RegionComPro<-data.frame(pro=rownames(REHpro1)[apply(REHpro1,1,function(x){sum(x != "No-Significant")==6})],region="AllRegion")  #908
+RegionComPro$uniprot <- gsub("[.]","-",RegionComPro$pro)   #sapply(RegionComPro$pro, function(x){str_split(x,"-")[[1]][1]})
+datRegionEnrich<-rbind(regionPro,RegionComPro)
+# datRegionEnrich$region<-paste("Epilepsy",seq="_",datRegionEnrich$region)
+
+```
+```{r}
+AllDatRegionEnrich<- datRegionEnrich[,c(3,2)]           #datRegionEnrich[,c(3,2)]    #datHRpro[,c(3,2)] 
+AllDatRegionEnrich <- unique(AllDatRegionEnrich)
+
+# all pro
+# mergedColors_NOgrey<-mergedColors[-grep("grey",mergedColors)]
+# datExpr_NOgrey<-datExpr[,-grep("grey",mergedColors)]
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# load(file="4314pro_mergedColors_mergedModule.RData")
+# load(file = "datExpr_row1001_col4314.RData")
+
+ModulePro = colnames(datExpr)
+intModules = unique(mergedModule)   #dynamicColors  mergedColors
+
+RegionType<-unique(AllDatRegionEnrich$region)
+
+all_data2<-rbind()
+for(k in 1:length(intModules)){
+  #mergedColors
+  modPro<-ModulePro[mergedModule==intModules[k]] #pro[FilPro$module==intModules[k]]#pro[mergedColors==intModules[k]]
+  
+  TERM2GENE=data.frame(TERM=AllDatRegionEnrich$region,Pro=AllDatRegionEnrich$uniprot)
+  TERM2NAME=data.frame(TERM=AllDatRegionEnrich$region,NAME=AllDatRegionEnrich$region)
+  
+  ##开始富集分析
+  g=try(enricher(gene=modPro, 
+             pvalueCutoff = 1,
+             pAdjustMethod = "BH", 
+             qvalueCutoff = 1,
+             minGSSize = 0,
+             maxGSSize = 2000,
+             TERM2GENE=TERM2GENE,
+             TERM2NAME=TERM2NAME))
+  if("NULL" %in% class(g)){next}else{g=g}
+ 
+  g_tmp=g@result
+  
+  GeneRatio<-sapply(g_tmp$GeneRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  BgRatio<-sapply(g_tmp$BgRatio,function(x){as.numeric(str_split(x,"/")[[1]][1])/as.numeric(str_split(x,"/")[[1]][2])})
+  g_tmp$enrichment=GeneRatio/BgRatio
+  #write.csv(as.data.frame( g_tmp@result), file=paste0(datanames[i],"_","Celltype_","enrichment.csv")) #输出csv格式结果
+  g_tmp$Module<-rep(intModules[k],nrow(g_tmp))
+  g_new=g_tmp[,c(1,5,6,10,11)]
+  all_data2 <- rbind(all_data2, g_new)
+}
+
+library(pheatmap)
+MergedMoudle<-c("M3", "M5", "M8", "M4", "M2", "M7", "M1", "M6", "M9")
+datFDR2<-all_data2[,c(1,5,2)]
+datFDR2$pvalue<-as.numeric(datFDR2$pvalue)
+# datFDR2$p.adjust<-as.numeric(datFDR2$p.adjust)
+datFDR2<-reshape2::dcast(datFDR2, ID~Module)
+datFDR2<-data.frame(datFDR2,row.names = "ID")
+datFDR2<-datFDR2[,MergedMoudle]
+datFDR2<-datFDR2[c(1,3,7,5,6,2,4),]
+# datFDR$ 
+
+datEn2<-all_data2[,c(1,5,4)]
+datEn2$enrichment<-as.numeric(datEn2$enrichment)
+datEn2<-reshape2::dcast(datEn2, ID~Module)
+datEn2<-data.frame(datEn2,row.names = "ID")
+datEn2<-datEn2[,MergedMoudle]
+datEn2<-datEn2[c(1,3,7,5,6,2,4),]
+
+tmp1.2<-as.data.frame(ifelse(t(datFDR2) < 0.05, "*", ""))
+tmp1.2[is.na(tmp1.2)]<-""
+tmp2.2<-as.data.frame(ifelse(tmp1.2 != "", round(t(datEn2),2), ""))
+# tmp2<-round(t(datEn),2)
+tmp2.2[is.na(tmp2.2)]<-0
+
+
+tmp3.2<-cbind()
+for(i in 1:ncol(tmp2.2)){
+  d1<-paste0(tmp1.2[,i],"\n",tmp2.2[,i])
+  tmp3.2<-cbind(tmp3.2,d1)
+}
+rownames(tmp3.2)<-rownames(tmp2.2)
+colnames(tmp3.2)<-colnames(tmp2.2)
+tmp3.2<-t(tmp3.2[MergedMoudle,])
+
+
+datEn2[is.na(datEn2)]<-0
+
+datEn_all <- datEn2         #rbind(datEn, datEn2)
+tmp3_all <- tmp3.2         #rbind(tmp3, tmp3.2)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pheatmap(datEn_all,#fontsize_col=10,fontsize_row=11,
+           fontsize = 1.5,
+           angle_col=45,
+           show_rownames=T,show_colnames = T,
+           cluster_row=F,cluster_col=F,#scale="column",
+           # treeheight_row=15,treeheight_col=15,
+           main= "Region Enrichment",                            
+           #paste(e_region[i],seq="_","Cell-Type Enrichment"),#border_color=NA,
+           color = colorRampPalette(c("#FEF3F0","#E3640D"))(10),
+           border_color = "#DCDADC",
+           display_numbers = as.matrix(tmp3_all),
+           cellwidth = 10, cellheight = 4,
+           fontsize_number=1.5,
+           width=8,height=4,
+           # legend_breaks=c(0,1,2,3),
+           # legend_labels=c("0","1   Enrichment( *** FDR<0.05 )","2","3"),
+           filename = "E-Region Enrichment_9mergedmodule_epilepsy_health_with_isoform_p_0.05_0.5NA_20230712.pdf")
+          #paste(e_region[i],seq="_","Cell-Type Enrichment_all_control_Pro_11dynamicmodule.pdf")
+
+```
+
+# 20230712 drug targets match  
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+# pro_cor_over_0.5
+pro_cor0.5<-read.csv(file = "9Modules_KME_cor_over_0.5_select_proteins.csv")
+datExpr<-datExpr[, pro_cor0.5$X]
+mergedModule<-pro_cor0.5$Module
+```
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+Drugbank <- data.table::fread('Drugbank_list.csv',data.table = F)[,c(4,1,2,3)]
+colnames(Drugbank)[1]<-"pro"
+Drugbank_melt<-reshape2::dcast(Drugbank[,c(1,2)],pro~drug)
+
+Drugtarget <- data.table::fread('all_human_drug_target_sep.csv',data.table = F)[,c(3,10,4,11)]
+colnames(Drugtarget)[1]<-"pro"
+Drugtarget_melt<-reshape2::dcast(Drugtarget[,c(1,2)],pro~Type.1)
+
+MergedMoudle<-unique(mergedModule)
+# matched_number<-NULL
+Drugbank_matched_anno<-NULL
+Drugtarget_matched_anno<-NULL
+for(i in 1:length(MergedMoudle)){
+  d1<-data.frame(pro=colnames(datExpr)[mergedModule==MergedMoudle[i]])
+  
+  d22<-merge(d1,Drugtarget,by="pro")
+  d22$module<-c(MergedMoudle[i])
+  Drugtarget_matched_anno<-rbind(Drugtarget_matched_anno,d22)
+  
+  d21<-merge(d1,Drugbank,by="pro")
+  if (nrow(d21)==0){
+      next;
+    }
+  d21$module<-c(MergedMoudle[i])
+  Drugbank_matched_anno<-rbind(Drugbank_matched_anno,d21)
+  
+  # d3<-data.frame(ModuleDrugbank=length(unique(d21$pro)), ModuleDrugtarget=length(unique(d22$pro)),row.names = MergedMoudle[i])
+  # matched_number<-rbind(matched_number,d3)
+}
+Drugtarget_num<-as.data.frame(table(Drugtarget_matched_anno$module))
+Drugbank_num<-as.data.frame(table(Drugbank_matched_anno$module))
+matched_number<-merge(Drugbank_num, Drugtarget_num, by="Var1", all=T)
+colnames(matched_number)<-c("module", "ModuleDrugbank", "ModuleDrugtarget")
+matched_number[is.na(matched_number)]<-0
+
+matched_number$NOdrug<-matched_number$ModuleDrugtarget-matched_number$ModuleDrugbank
+# matched_number$module<-rownames(matched_number)
+matched_number1<-melt(matched_number[,c(1,2,4)],id="module")
+
+library(dplyr)
+matched_number2<-arrange(matched_number1,module,desc(value))
+dat_drug = matched_number1 %>%
+  filter(variable=="ModuleDrugbank") %>%
+  mutate(number_drug_targets = -1*value) %>% as.data.frame()
+dat_drug$module = factor(dat_drug$module, levels=MergedMoudle)
+dat_NOdrug = matched_number1 %>%
+  filter(variable=="NOdrug") %>%
+  mutate(number_drug_targets = value) %>% as.data.frame()
+dat_NOdrug$module = factor(dat_NOdrug$module, levels=MergedMoudle)
+
+g<-ggplot() +
+  geom_bar(data=dat_drug, aes(x=module, y=number_drug_targets, fill=variable),
+           stat = "identity", position = 'dodge') +  #width = 2
+  geom_text(data=dat_drug, aes(x=module, y=number_drug_targets, label=value, vjust=1.25)) +
+  geom_bar(data=dat_NOdrug, aes(x=module, y=number_drug_targets, fill=variable),
+           stat = "identity", position = 'dodge') +
+  geom_text(data=dat_NOdrug, aes(x=module, y=number_drug_targets, label=value, vjust=-0.25)) +
+  scale_y_continuous(breaks=c(400,300,200,100, 0, -20),
+                     labels=c("400","300","200","100","0","-20")) +
+  scale_fill_manual(values=c("#ff9a9e","#a3bded"))+
+  theme_classic()                   #theme_gray()  #theme_classic()
+print(g)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+ggsave("drug_target_matched_module.pdf")
+```
+```{r chord diagram-Drugtarget}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+Drugtarget <- data.table::fread('all_human_drug_target_sep.csv',data.table = F)[,c(3,10)]
+colnames(Drugtarget)[1]<-"pro"
+# Drugtarget_melt<-reshape2::dcast(Drugtarget[,c(1,2)],pro~Type.1)
+
+drugType<-unique(Drugtarget$Type.1)
+# drugType<-drugType[-match(c("other categories","unclassified proteins"),drugType)]
+MergedMoudle<-unique(mergedModule)
+
+matched_number<-NULL
+for(i in 1:length(MergedMoudle)){
+  d1<-data.frame(pro=colnames(datExpr)[mergedModule==MergedMoudle[i]])
+  d1$pro <- sapply(d1$pro, function(x){str_split(x, "-")[[1]][1]})
+  d1 <- data.frame(pro=unique(d1$pro))
+  d2<-merge(d1,Drugtarget,by="pro")
+  for(j in 1:length(drugType)){
+  d3<-data.frame(module=MergedMoudle[i],drugType=drugType[j],num=sum(d2$Type.1==drugType[j]))
+  matched_number<-rbind(matched_number,d3)
+  }
+}
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# write.csv(matched_number, "Cor_0.5_Drugtarget_matched_number.csv")
+```
+```{r drugbank}
+#grugBank
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+Drugbank <- data.table::fread('Drugbank_list.csv',data.table = F)[,c(4,1)]
+colnames(Drugbank)[1]<-"pro"
+#data.frame(pro=unique(data.table::fread('Drugbank_list.csv',data.table = F)[,c(4)]))
+# setdiff(Drugbank$pro,unique(Drugtarget$pro))
+# [1] "P45954" "Q9NY72" "Q8IWT1" "Q9UGQ3" "Q6PXP3" "O95528" "Q9BYW1" "Q8TD20" "P35219"
+# [10] "Q9NS85" "Q15311" "F1T0I5" "Q693P7" "P40859" "F5GY58" "Q9UM01"
+Drugbank1<-merge(Drugbank,Drugtarget,by="pro")[,c(1,3)]
+Drugbank2<-unique(Drugbank1)
+
+drugType<-unique(Drugbank2$Type.1)
+drugType<-drugType[-match(c("unclassified proteins"),drugType)]
+
+matched_number<-NULL
+for(i in 1:length(MergedMoudle)){
+  d1<-data.frame(pro=colnames(datExpr)[mergedModule==MergedMoudle[i]])
+  d2<-merge(d1,Drugbank2,by="pro")
+  for(j in 1:length(drugType)){
+  d3<-data.frame(module=MergedMoudle[i],drugType=drugType[j],num=sum(grepl(drugType[j],d2$Type.1)))
+  matched_number<-rbind(matched_number,d3)
+  }
+}
+
+```
+```{r}
+# Libraries
+# library(tidyverse)
+library(viridis)
+library(patchwork)
+# library(hrbrthemes)
+# BiocManager::install('hrbrthemes')
+ library(circlize)
+# BiocManager::install("chorddiag")
+# library(chorddiag)
+# devtools::install_github("chorddiag")
+
+dataChord<-reshape2::dcast(matched_number, module~drugType, na.rm=T)
+dataChord<-data.frame(dataChord,row.names = "module")
+dataChord<-as.matrix(dataChord)
+# dataChord<-cbind(dataChord, apply(dataChord, 1, function(x){sum(x)}))
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+# write.csv(dataChord, "all_module_pro_DrugBank_matched_number.csv")
+
+# color palette
+# grid.col <- data.frame(group=c(rownames(dataChord),colnames(dataChord)),                       color=c(viridis(9, alpha = 1, begin = 0, end = 1, option = "D")[sample(1:9)],
+#                 rep("#443AB6",8)))
+grid.col <- data.frame(group=c(rownames(dataChord),colnames(dataChord)), color=c("#E75E55", "#D8BE40", "#ACC29B", "#9EC2D5", "#D9B695", "#96C1AC", "#F3B559", "#D5B6D6", "#23A3CA", rep("#7D519E",10)))
+# "#3E4097","#2357A6","#05557E","#E76E61","#99B5DE","#ACD275","#658633","#16894E","#D8B6D6"
+grid.col<-as.matrix(data.frame(grid.col,row.names = "group"))
+grid.col<-grid.col[,1]
+
+# mycolor <- viridis(10, alpha = 1, begin = 0, end = 1, option = "D")
+# mycolor <- mycolor[sample(1:10)]
+
+# parameters
+circos.clear()
+circos.par(start.degree = 90, gap.degree = 4, track.margin = c(-0.1, 0.1), points.overflow.warning = FALSE)
+par(mar = rep(0, 4))
+# Base plot
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+pdf("ChordDiagram_figure_drug_bank_Module_proteins_cor_0.5.pdf")
+chordDiagram(
+  dataChord, 
+  transparency = 0.25,
+  grid.col = grid.col,
+  # row.col = 1:9,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  diffHeight  = -0.05,
+  # annotationTrack = "grid", 
+  annotationTrackHeight = c(0.03, 0.05),
+  link.arr.type = "big.arrow",  
+  link.sort = TRUE,
+  link.largest.ontop = TRUE
+)
+
+```
+
+#20230716 42 drug targets boxplot
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+load(file="samples_information_for_comparing_E_H.RData")
+df_nor<-data.table::fread('HBA_pro_matrix_new_epilepsy_nor_data_old_healthy_nor_data.csv',data.table = F)
+rownames(df_nor) <- df_nor$samples
+df_nor <- df_nor[,-c(1,2)]
+
+# interSample <- intersect(colnames(df_nor), info$sample)
+# rownames(info) <- info$sample
+# info1 <- info[interSample,]
+# rep <- info1[grep("_rep", info1$sample),]
+# biorep <- as.data.frame(table(info1$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions))
+# biorep1 <- biorep[-1,] 
+# sum(biorep1$Freq) #2581
+# biorep1$Freq1 <- biorep1$Freq-1 
+# sum(biorep1$Freq1) #2460 
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+SP <- read.csv("42_drug_targets_for_epilepsy_vs_health_boxplot.csv")
+modulesPro <- data.frame(pro=colnames(datExpr), mergedModule=mergedModule)
+SP$module <- modulesPro$mergedModule[match(SP$UniProt.ID, modulesPro$pro)]
+SP$plotTile <- paste0(SP$GeneName,"_",SP$UniProt.ID,"_",SP$module)
+
+df <- df_nor[SP$UniProt.ID, EHsamples$samples] 
+df1 <- as.data.frame(t(df))
+df1$Regions <- EHsamples$region[match(rownames(df1), EHsamples$samples)]
+
+pro <- SP$UniProt.ID
+for(i in 1:length(pro)){
+  d1<-df1[,c(which(colnames(df1)==pro[i]),ncol(df1))]
+  colnames(d1) <- c("value","region")
+  d1$pathology <- info$pathology[match(rownames(d1), info$sample)]
+  d1$region <- factor(d1$region, levels=c("FrontalLobe","TemporalLobe","ParietalLobe","OccipitalLobe","Hippocampus_Hipp", "Amygdala_Amyg"))
+  ggplot(d1,aes(x=region,y = value,fill=pathology))+
+         scale_fill_manual(values = c("#EE7785","#67D5B5"))+
+         scale_colour_manual(values = c("white","white"))+  #aesthetics = "colour"
+         stat_boxplot(geom="errorbar",width=0.3,size=0.5,position=position_dodge(0.8),color="black")+
+         geom_boxplot(width=0.3, size=0.5,
+                      aes(colour = pathology),
+                      # fill="black",
+                      alpha=0.8,
+                      color="black",
+                      outlier.fill = "black",
+                      outlier.colour="black",  #"black",
+                      outlier.shape = 19,
+                      outlier.size = 0.01,
+                      position = position_dodge(0.8))+
+         stat_compare_means(aes(label =..p.signif..), method = "wilcox.test", method.args = list(var.equal = TRUE))+
+         theme_classic() +         #theme_bw()+
+         theme(axis.text.x=element_text(angle=15,hjust=1,colour="black",size=10),
+                plot.title = element_text(hjust = 0.5))+
+         ylab("Relative expression")+xlab("Region")+
+         ggtitle("", SP$plotTile[i])
+  setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA/42_drug_targets_boxplot")
+  ggsave(paste0(SP$plotTile[i],"each protein expression in each region.pdf"),width = 10, height = 5)
+}
+```
+
+#20230913 32 specific drug targets in single lobe - boxplot
+```{r}
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool_update_20230706.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2")
+load(file="samples_information_for_comparing_E_H.RData")
+df_nor<-data.table::fread('HBA_pro_matrix_new_epilepsy_nor_data_old_healthy_nor_data.csv',data.table = F)
+rownames(df_nor) <- df_nor$samples
+df_nor <- df_nor[,-c(1,2)]
+
+# interSample <- intersect(colnames(df_nor), info$sample)
+# rownames(info) <- info$sample
+# info1 <- info[interSample,]
+# rep <- info1[grep("_rep", info1$sample),] #285
+# biorep <- as.data.frame(table(info1$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions))
+# biorep1 <- biorep[-1,] 
+# sum(biorep1$Freq) #2581
+# biorep1$Freq1 <- biorep1$Freq-1 
+# sum(biorep1$Freq1) #2460 
+  
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+SP <- read.csv("32_specific_drug_targets_in_single_lobe.csv")
+modulesPro <- data.frame(pro=colnames(datExpr), mergedModule=mergedModule)
+SP$module <- modulesPro$mergedModule[match(SP$UniProt.ID, modulesPro$pro)]
+SP$plotTile <- paste0(SP$GeneName,"_",SP$UniProt.ID,"_",SP$module)
+
+df <- df_nor[SP$UniProt.ID, EHsamples$samples] 
+df1 <- as.data.frame(t(df))
+df1$Regions <- EHsamples$region[match(rownames(df1), EHsamples$samples)]
+
+pro <- SP$UniProt.ID
+for(i in 1:length(pro)){
+  d1<-df1[,c(which(colnames(df1)==pro[i]),ncol(df1))]
+  colnames(d1) <- c("value","region")
+  d1$pathology <- info$pathology[match(rownames(d1), info$sample)]
+  d1$region <- factor(d1$region, levels=c("FrontalLobe","TemporalLobe","ParietalLobe","OccipitalLobe","Hippocampus_Hipp", "Amygdala_Amyg"))
+  ggplot(d1,aes(x=region,y = value,fill=pathology))+
+         scale_fill_manual(values = c("#EE7785","#67D5B5"))+
+         scale_colour_manual(values = c("white","white"))+  #aesthetics = "colour"
+         stat_boxplot(geom="errorbar",width=0.3,size=0.5,position=position_dodge(0.8),color="black")+
+         geom_boxplot(width=0.3, size=0.5,
+                      aes(colour = pathology),
+                      # fill="black",
+                      alpha=0.8,
+                      color="black",
+                      outlier.fill = "black",
+                      outlier.colour="black",  #"black",
+                      outlier.shape = 19,
+                      outlier.size = 0.01,
+                      position = position_dodge(0.8))+
+         stat_compare_means(aes(label =..p.signif..), method = "wilcox.test", method.args = list(var.equal = TRUE))+
+         theme_classic() +         #theme_bw()+
+         theme(axis.text.x=element_text(angle=15,hjust=1,colour="black",size=10),
+                plot.title = element_text(hjust = 0.5))+
+         ylab("Relative expression")+xlab("Region")+
+         ggtitle("", SP$plotTile[i])
+  setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA/32proteins_specific_in_lobe")
+  ggsave(paste0(SP$plotTile[i],"each protein expression in each region.pdf"),width = 10, height = 5)
+}
+```
+
+# all module protien exprossion in health and epilepsy boxplot
+```{r}
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+# load(file="datExpr_row1002_col4395.RData")
+# load(file="4395pro_mergedColors_mergedModule.RData")
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+df_nor<-data.table::fread('HBA_prot_matrix_normolized_20220811.csv',data.table = F)
+rownames(df_nor)<-df_nor[,1]
+df_nor<-df_nor[,-1]
+
+datEmodule<-as.data.frame(t(df_nor))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+pro2gene<-data.table::fread('gene2protein_reviewed_uniprot_seprow.csv', stringsAsFactors = F, data.table = F, fill = T)
+datEmodule$gene<-pro2gene$Gene.Names[match(rownames(datEmodule),pro2gene$Entry)]
+rownames(datEmodule)<-paste(datEmodule$gene,sep="_",rownames(datEmodule))
+datEmodule<-as.data.frame(t(datEmodule[,-ncol(datEmodule)]))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+
+datEmodule$Lobe<-info$Lobe[match(rownames(datEmodule),info$sample)]
+datEmodule$Gyrus<-info$Gyrus[match(rownames(datEmodule),info$sample)]
+datEmodule$L_G<-paste(datEmodule$Lobe,seq="_",datEmodule$Gyrus)
+datEmodule$pathology <- info$pathology[match(rownames(datEmodule),info$sample)]
+
+Eregion<-c("TemporalLobe","Hippocampus_Hipp","Amygdala_Amyg","FrontalLobe","ParietalLobe","OccipitalLobe")
+datEmodule1<-NULL
+for(i in 1:length(Eregion)){
+  d1<-datEmodule[grep(Eregion[i],datEmodule$L_G),]
+  d1$L_G<- Eregion[i]
+  d2<-d1[,-c(ncol(d1)-2,ncol(d1)-3)]
+  datEmodule1<-rbind(datEmodule1,d2)
+}
+
+library(ggplot2)
+library(ggsci)
+library(ggpubr)
+library(scales)
+
+# module<-unique(mergedModule)
+pro <- c("O60462", "Q5TCQ9")                            #c("Q16288", "P0CG29")
+for(i in 1:length(pro)){
+  d1<-datEmodule1[,c(grep(pro[i],colnames(datEmodule1)),ncol(datEmodule1),ncol(datEmodule1)-1)]
+  for(j in 1:(ncol(d1)-2)){
+   d2<-d1[,c(j,ncol(d1),ncol(d1)-1)]
+    colnames(d2)[c(1,2)]<-c("value","group")
+    ggplot(d2,aes(x=group,y = value,fill=pathology))+
+         scale_fill_manual(values = c("#EE7785","#67D5B5"))+
+         scale_colour_manual(values = c("white","white"))+  #aesthetics = "colour"
+         stat_boxplot(geom="errorbar",width=0.3,size=0.5,position=position_dodge(0.8),color="black")+
+         geom_boxplot(width=0.3, size=0.5,
+                      aes(colour = pathology),
+                      # fill="black",
+                      alpha=0.8,
+                      color="black",
+                      outlier.fill = "black",
+                      outlier.colour="black",  #"black",
+                      outlier.shape = 19,
+                      outlier.size = 0.01,
+                      position = position_dodge(0.8))+
+         stat_compare_means(aes(label =..p.signif..), method = "wilcox.test", method.args = list(var.equal = TRUE))+
+         theme_classic() +         #theme_bw()+
+         theme(axis.text.x=element_text(angle=15,hjust=1,colour="black",size=10),
+                plot.title = element_text(hjust = 0.5))+
+         ylab("Relative expression")+xlab("Region")+
+         ggtitle("", colnames(d1)[j])
+  setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms/box_plot_foci_drug_targets")
+  ggsave(paste0(colnames(d1)[j],"each protein expression in each region.pdf"),width = 10, height = 5)
+  }
+}
+
+for(i in 1:length(module)){
+  d1<-datEmodule1[,c(grep(module[i],mergedModule),ncol(datEmodule1),ncol(datEmodule1)-1)]
+  for(j in 1:(ncol(d1)-2)){
+    d2<-d1[,c(j,ncol(d1),ncol(d1)-1)]
+    colnames(d2)[c(1,2)]<-c("value","group")
+    #d2$value<-log10(d2$value)
+    ggplot(d2,aes(x=group,y = value,fill=pathology))+
+         # geom_split_violin(trim = FALSE,colour="white",size=0.0001,stat = "ydensity", position = "identity",width=1.4)+
+         # geom_point(stat = 'summary',fun=mean, #pch=19,
+         #     position = position_dodge(width = 0.2),size=0.4)+
+         scale_fill_manual(values = c("#EE7785","#67D5B5"))+
+         scale_colour_manual(values = c("white","white"))+  #aesthetics = "colour"
+         # stat_summary(fun.min = function(x){quantile(x)[2]},
+         #     fun.max = function(x){quantile(x)[4]},
+         #     geom = 'errorbar',color='black',
+         #     width=0.1,size=0.3,
+         #     position = position_dodge(width = 0.2))+
+         stat_boxplot(geom="errorbar",width=0.3,size=0.5,position=position_dodge(0.8),color="black")+
+         geom_boxplot(width=0.3, size=0.5,
+                      aes(colour = pathology),
+                      # fill="black",
+                      alpha=0.8,
+                      color="black",
+                      outlier.fill = "black",
+                      outlier.colour="black",  #"black",
+                      outlier.shape = 19,
+                      outlier.size = 0.01,
+                      position = position_dodge(0.8))+
+         # stat_summary(fun=mean,aes(colour = pathology),
+         #              geom="point",
+         #              # color="#218380",
+         #              fill="black",
+         #              shape=22, 
+         #              size=0.2,
+         #              alpha=0.8,
+         #              position = position_dodge(0.2))+
+         # stat_compare_means(method = "wilcox.test", method.args = list(var.equal = TRUE))+
+         stat_compare_means(aes(label =..p.signif..), method = "wilcox.test", method.args = list(var.equal = TRUE))+
+         theme_classic() +         #theme_bw()+
+         theme(axis.text.x=element_text(angle=15,hjust=1,colour="black",size=10),
+              # axis.text.y=element_text(face="plain",family="Times",size=16),
+              # axis.title.y=element_text(face="plain",family="Times",size=20),
+              # panel.border=element_blank(),axis.line=element_line(colour="black",size=1),
+              # legend.text=element_text(face="italic",family="Times",size=16,colour="black"),
+              # legend.title=element_text(face="italic",family="Times",size=18,colour="black"),
+              # panel.grid.major=element_blank(),
+              # panel.grid.minor=element_blank())+
+                plot.title = element_text(hjust = 0.5))+
+         ylab("Relative expression")+xlab("Region")+
+         ggtitle(module[i],colnames(d1)[j])
+  setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms/all_box_plot")
+  ggsave(paste(module[i],sep="_",colnames(d1)[j],"each protein expression in each region.pdf"),width = 10, height = 5)
+  }
+}
+
+```
+```{r}
+#regulation in health and epilepsy (fold change and t-test)
+# datRegu<-corPro
+# Module<-unique(datRegu$module)
+# cor_pro<-rownames(datRegu)
+# colnames(datEmodule1)[-c(ncol(datEmodule1),ncol(datEmodule1)-1)]<-sapply(colnames(datEmodule1[-c(ncol(datEmodule1),ncol(datEmodule1)-1)]),function(x){str_split(x,"_")[[1]][2]})
+# datEmodule2<-datEmodule1[,cor_pro]
+# datEmodule2<-cbind(datEmodule2, datEmodule1[,c(ncol(datEmodule1),ncol(datEmodule1)-1)])
+# MergedModule<-mergedModule[match(cor_pro,colnames(datExpr))]
+
+datEmodule2 <- datEmodule1
+datFC<-NULL
+datCompare<-NULL
+datCompare1 <- NULL
+for(i in 1:length(module)){
+  d1<-datEmodule2[,c(grep(module[i],mergedModule),ncol(datEmodule2)-1, ncol(datEmodule2))]
+  for(j in 1:(ncol(d1)-2)){
+    d2<-d1[,c(j,ncol(d1)-1,ncol(d1))]
+    colnames(d2)[c(1,3)]<-c("value","group")
+    mean0<-aggregate(d2$value, by=list(d2$group, d2$L_G), FUN=mean, na.rm=TRUE)
+    health<-mean0[grep("health",mean0$Group.1),]
+    epilepsy<-mean0[grep("epilepsy",mean0$Group.1),]
+    FC<-as.data.frame(t(data.frame(region=epilepsy$Group.2, FoldChange=epilepsy$x/health$x)))
+    colnames(FC)<-FC[1,]
+    FC<-FC[-1,]
+    FC$Module<-module[i]
+    rownames(FC)<-colnames(d1)[j]
+    datFC<-rbind(datFC, FC)
+    
+    e_region<-unique(d2$L_G)
+    compare.p<-NULL
+    datT <- NULL
+    for(m in 1:length(e_region)){
+      d3<-d2[grep(e_region[m],d2$L_G),]
+      epilepsy1<-d3[grep("epilepsy",d3$group),]
+      health1<-d3[grep("health",d3$group),]
+      
+      datT0 <- data.frame(protein=colnames(d1)[j], region=e_region[m], p.value=t.test(epilepsy1$value,health1$value)$p.value, module=module[i])
+      datT <- rbind(datT, datT0)
+      
+      compare.p0<-data.frame(region=e_region[m], p.value=t.test(epilepsy1$value,health1$value)$p.value)  #wilcox.test
+      compare.p<-rbind(compare.p,compare.p0)
+    }
+    datT$p.adjust <- p.adjust(datT$p.value, method = "BH")
+    datCompare1 <- rbind(datCompare1, datT)
+    
+    compare.p <- as.data.frame(t(compare.p))
+    colnames(compare.p) <- compare.p[1,]
+    compare.p <- compare.p[-1,]
+    rownames(compare.p)=colnames(d1)[j]
+    compare.p$module <- module[i]
+    datCompare<-rbind(datCompare, compare.p)
+  }}
+datCompare_1<-as.data.frame(t(apply(datCompare[,-ncol(datCompare)],1,function(x){p.adjust(x,method = "BH")})))
+datCompare_1$module<-datCompare$module
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy/all protein relative expression only boxplot 20221116")
+write.csv(datCompare1, "all_protein_health_epilepsy_T-test_p.value.csv")
+
+```
+
+# top10 pro exprossion in health and epilepsy violin
+```{r}
+datEmodule<-datExpr[,topPro$pro]
+datEmodule$Lobe<-info$Lobe[match(rownames(datEmodule),info$sample)]
+datEmodule$Gyrus<-info$Gyrus[match(rownames(datEmodule),info$sample)]
+datEmodule$L_G<-paste(datEmodule$Lobe,seq="_",datEmodule$Gyrus)
+datEmodule$pathology <- info$pathology[match(rownames(datEmodule),info$sample)]
+
+Eregion<-c("TemporalLobe","Hippocampus_Hipp","Amygdala_Amyg","FrontalLobe","ParietalLobe","OccipitalLobe")
+datEmodule1<-NULL
+for(i in 1:length(Eregion)){
+  d1<-datEmodule[grep(Eregion[i],datEmodule$L_G),]
+  d1$L_G<- Eregion[i]
+  d2<-d1[,-c(ncol(d1)-2,ncol(d1)-3)]
+  datEmodule1<-rbind(datEmodule1,d2)
+}
+
+mytheme <- theme(axis.text.x=element_text(size=12), 
+                 axis.text.y=element_text(size=12), 
+                 axis.title=element_text(size = 13), 
+                 legend.text=element_text(size=12),
+                 legend.title=element_text(size=12),
+                 axis.line = element_line(size=0.7), 
+                 panel.border = element_blank(),
+                 panel.grid = element_blank())
+
+library(ggplot2)
+library(ggsci)
+library(ggpubr)
+library(scales)
+module<-unique(topPro$module)
+
+violin<-list()
+n=1
+for(i in 1:length(module)){
+  d1<-datEmodule1[,c(grep(module[i],topPro$module),ncol(datEmodule1),ncol(datEmodule1)-1)]
+  for(j in 1:10){
+    d2<-d1[,c(j,11,12)]
+    colnames(d2)[c(1,3)]<-c("value","group")
+    #d2$value<-log10(d2$value)
+    g0<-ggplot(d2,aes(x=group,y = value,fill=pathology))+
+         geom_split_violin(trim = FALSE,colour="black",size=0.0001,stat = "ydensity", position = "identity",width=1.4)+
+         # geom_point(stat = 'summary',fun=mean, #pch=19,
+         #     position = position_dodge(width = 0.2),size=0.4)+
+         scale_fill_manual(values = c("#EE7785","#67D5B5"))+
+         scale_colour_manual(values = c("white","white"))+  #aesthetics = "colour"
+         # stat_summary(fun.min = function(x){quantile(x)[2]},
+         #     fun.max = function(x){quantile(x)[4]},
+         #     geom = 'errorbar',color='black',
+         #     width=0.1,size=0.3,
+         #     position = position_dodge(width = 0.2))+
+         stat_boxplot(geom="errorbar",width=0.05,size=0.1,position=position_dodge(0.2),color="black")+
+         geom_boxplot(width=0.05, size=0.05,
+                      aes(colour = pathology),
+                      # fill="black",
+                      alpha=0.8,
+                      color="black",
+                      outlier.fill = "black",
+                      outlier.colour="black",  #"black",
+                      outlier.shape = 19,
+                      outlier.size = 0.01,
+                      position = position_dodge(0.2))+
+         # stat_summary(fun=mean,aes(colour = pathology),
+         #              geom="point",
+         #              # color="#218380",
+         #              fill="black",
+         #              shape=22,  
+         #              size=0.2,
+         #              alpha=0.8,
+         #              position = position_dodge(0.2))+
+         theme_grey()+         #theme_bw()+
+         theme(axis.text.x=element_text(angle=15,hjust=1,colour="black",size=10),
+              # axis.text.y=element_text(face="plain",family="Times",size=16),
+              # axis.title.y=element_text(face="plain",family="Times",size=20),
+              # panel.border=element_blank(),axis.line=element_line(colour="black",size=1),
+              # legend.text=element_text(face="italic",family="Times",size=16,colour="black"),
+              # legend.title=element_text(face="italic",family="Times",size=18,colour="black"),
+              # panel.grid.major=element_blank(),
+              # panel.grid.minor=element_blank())+
+                plot.title = element_text(hjust = 0.5))+
+         ylab("Relative expression")+xlab("Region")+
+         ggtitle(module[i],colnames(d1)[j])
+         
+    violin[[n]]<-ggplotGrob(g0)
+    n=n+1
+  }
+}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221018 health same region as epilepsy")
+pdf("each protein expression in each region.pdf",width = 15, height = 180)
+library(gridExtra)
+grid.arrange(grobs=violin, nrow=45, ncol=2) #layout_matrix=rbind(c(1,1),c(2,3)) right="Main Title"
+dev.off()
+
+#install.packages("gridExtra", repo="http://cran.r-project.org",dep=TRUE) 
+
+
+
+```
+
+#Preservation Zsummary
+```{r}
+multiExpr = list(A1=list(data=datExpr_TL),A2=list(data=datExpr_PL)) #adjacencies/TOM
+multiColor = list(A1 = dynamicColors) #dynamicColors  mergedColors
+## modulePreservation
+mp<-modulePreservation(multiExpr, 
+                multiColor,
+                referenceNetworks=1,
+                verbose=2,
+                dataIsExpr=TRUE, #FALSE
+                networkType="signed",
+                nPermutations=30,
+                corFnc="bicor",
+                maxGoldModuleSize=100,
+                randomSeed = 1,
+                quickCor = 0,
+                maxModuleSize=600)
+stats = mp$preservation$Z$ref.A1$inColumnsAlsoPresentIn.A2 
+stats[order(-stats[,2]),c(1:2)]
+
+stats$module = rownames(stats)
+library(ggplot2)
+library(ggrepel)
+g=ggplot(data=stats,aes(x=moduleSize,y=Zsummary.pres,col=module))+
+  geom_point(alpha=0.8, size=5) +
+  theme_bw(base_size=15)+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"))+
+  xlab("ModuleSize") + ylab("Zsummary.pres") +
+  ggtitle( "Preservation Zsummary" ) +
+  theme(plot.title = element_text(size=15,hjust = 0.5))+
+  scale_colour_manual(values = c(stats$module))+
+  theme(legend.position='none')+
+  geom_hline(yintercept = c(2,10),lty=4,lwd=1,col=c("blue","red"))+
+  geom_text_repel(aes(label=module),color="black",alpha = 0.8)
+print(g)
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20221009 all control")
+ggsave(g,filename = "Preservation Zsummary_allpro_11dynamicmodule_maxModuleSize600.pdf",height = 8,width = 6)
+
+
+```
+
+#22 potential drug targets
+```{r chord diagram-Drugtarget}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures")
+Drugtarget <- data.table::fread('22_potential_drug_targets.csv',data.table = F)
+
+drugType<-unique(Drugtarget$Type)
+
+group<-unique(Drugtarget$Drug_targts)
+
+matched_number<-NULL
+for(i in 1:length(group)){
+  d1<-Drugtarget[which(Drugtarget$Drug_targts==group[i]),]
+  for(j in 1:length(drugType)){
+  d2<-d1[which(d1$Type==drugType[j]),]
+  matched_number0 <- data.frame(group=group[i], type=drugType[j], num=nrow(d2))
+  matched_number<-rbind(matched_number,matched_number0)
+  }
+}
+
+library(tidyverse)
+library(viridis)
+library(patchwork)
+# library(hrbrthemes)
+library(circlize)
+
+dataChord<-reshape2::dcast(matched_number, group~type, na.rm=T)
+dataChord<-data.frame(dataChord,row.names = "group")
+dataChord<-as.matrix(dataChord)
+
+grid.col <- data.frame(group=c(rownames(dataChord),colnames(dataChord)),                       color=c("#3E4097","#E76E61","#99B5DE","#ACD275","#D8B6D6",rep("#7D519E",5)))
+grid.col<-as.matrix(data.frame(grid.col,row.names = "group"))
+grid.col<-grid.col[,1]
+
+# parameters
+circos.clear()
+circos.par(start.degree = 90, gap.degree = 4, track.margin = c(-0.1, 0.1), points.overflow.warning = FALSE)
+par(mar = rep(0, 4))
+# Base plot
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures")
+pdf("ChordDiagram_figure_22_potential_drug_targets2.pdf")
+chordDiagram(
+  dataChord, 
+  transparency = 0.25,
+  grid.col = grid.col,
+  # row.col = 1:9,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  diffHeight  = -0.05,
+  # annotationTrack = "grid", 
+  annotationTrackHeight = c(0.03, 0.05),
+  link.arr.type = "big.arrow",  
+  link.sort = TRUE,
+  link.largest.ontop = TRUE
+)
+```
+
+#filter drug targets up or down (dysregulated proteins)
+```{r single - brain region}
+#1 up-regulated proteins only in epilepsy of FL
+
+#t-test
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+# dat1<-data.table::fread('FrontalLobe_FC_t.test_pvalue.csv', stringsAsFactors = F, data.table = F, fill = T)
+# dat1 <- dat1[which(dat1$FC>0 & dat1$padj<0.01), ]
+# E_UP <- dat1$V1
+
+#wilcox
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+dat1 <- read.csv(file="epilepsy_vs_health_wilcox_dysregulated_group.csv")
+colnames(dat1) <- gsub("_group", "", colnames(dat1))
+dat1[dat1=="No-Significant"] <- NA
+rownames(dat1) <- dat1$X
+dat1 <- dat1[,-1]
+
+# dat2 <- dat1[!is.na(dat1$FrontalLobe), ]
+dat2 <- dat1[!is.na(dat1$OccipitalLobe), ]
+# dat2 <- dat1[!is.na(dat1$TemporalLobe), ]
+# dat2 <- dat1[!is.na(dat1$ParietalLobe), ]
+
+dat3 <- dat2[apply(dat2,1,function(x){sum(!is.na(x))==1}), ]
+E_Dys <- data.frame(pro_iso=rownames(dat3))
+
+E_Dys$pro <- sapply(E_Dys$pro_iso,function(x){str_split(x,"-")[[1]][1]})
+
+# #wilcox FC3 delet 0.5NA  FL
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/with_isoforms")
+# # load(file="FrontalLobe_FC_3_Padj_0.05_up_regulated_pro.RData")
+# # load(file="TemporalLobe_FC_3_Padj_0.05_up_regulated_pro.RData")
+# load(file="Hippocampus_Hipp_FC_3_Padj_0.05_up_regulated_pro.RData")
+# # load(file="OccipitalLobe_FC_3_Padj_0.05_up_regulated_pro.RData")
+# # load(file="ParietalLobe_FC_3_Padj_0.05_up_regulated_pro.RData")
+# E_UP <- pro_up
+
+# #2 merged module
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis/20230307_stay_isoforms")
+# load(file="datExpr_row1002_col4395.RData")
+# load(file="4395pro_mergedColors_mergedModule.RData")
+# dat2 <- data.frame(pro=colnames(datExpr), mergedModule=mergedModule)
+# #FL
+# Module_pro <- data.frame(pro_iso=dat2$pro[which(dat2$mergedModule=="M4" |dat2$mergedModule=="M5" | dat2$mergedModule=="M8" | dat2$mergedModule=="M9")])
+# Module_pro$pro <- sapply(Module_pro$pro_iso,function(x){str_split(x,"-")[[1]][1]})
+# # #TL
+# # Module_pro <- data.frame(pro_iso=dat2$pro[which(dat2$mergedModule=="M6")])
+# # Module_pro$pro <- sapply(Module_pro$pro_iso,function(x){str_split(x,"-")[[1]][1]})
+# # #Hip
+# # Module_pro <- data.frame(pro_iso=dat2$pro[which(dat2$mergedModule=="M2" | dat2$mergedModule=="M4")])
+# # Module_pro$pro <- sapply(Module_pro$pro_iso,function(x){str_split(x,"-")[[1]][1]})
+
+#3 ts in single brain region
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+dat3<-data.table::fread('3_HBA_ts_9639pro_1521sam_Gray_Lobe_3_2_2.5_20230306.csv', stringsAsFactors = F, data.table = F, fill = T)
+# dat3<-data.table::fread('3_HBA_ts_9639pro_1521sam_Grey_BBA_3_2_2.5_20220921.csv', stringsAsFactors = F, data.table = F, fill = T)
+rownames(dat3) <- dat3$V1
+dat3 <- dat3[,-1]
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+# info$BBA_G<-paste0(info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions,seq="_",info$W_G)
+info$L_G <- paste0(info$Lobe,seq="_",info$W_G)
+# dat3$BBA_G <- info$Lobe[match(rownames(dat3), info$BBA_G)]
+dat3$L_G <- info$Lobe[match(rownames(dat3), info$L_G)]
+
+# dat3.1 <- dat3[which(dat3$L_G=="FrontalLobe"), -ncol(dat3)]
+dat3.1 <- dat3[which(dat3$L_G=="ParietalLobe"), -ncol(dat3)]
+# dat3.1 <- dat3[which(dat3$L_G=="OccipitalLobe"), -ncol(dat3)]
+# dat3.1 <- dat3[which(dat3$L_G=="TemporalLobe"), -ncol(dat3)]
+# dat3.1 <- dat3[which(dat3$L_G=="SubcorticalNuclei"), -ncol(dat3)]
+# dat3.1 <- dat3[which(rownames(dat3)=="Hippocampus_Hipp_G"),]
+# dat3.1 <- dat3[which(rownames(dat3)=="Amygdala_Amyg_G"),]
+# tsPro <- data.frame(pro_iso=colnames(dat3.1)[apply(dat3.1, 2, function(x){sum(!is.na(x))>0})])
+tsPro <- data.frame(pro_iso=colnames(dat3.1)[which(!is.na(dat3.1[1,]))])
+tsPro$pro <- sapply(tsPro$pro_iso,function(x){str_split(x,"[.]")[[1]][1]})
+
+#4 drug targets
+#unknown
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+dat4.1<-data.table::fread('4_1_Drugbank_list.csv', stringsAsFactors = F, data.table = F, fill = T)[, c("status","uniprot")]
+dat4.1 <- unique(dat4.1)
+dat4.1 <- dat4.1[dat4.1$status!="Withdrawn", ]
+dat4.2<-data.table::fread('4_2_all_human_drug_target_sep.csv', stringsAsFactors = F, data.table = F, fill = T)
+dat4.2 <- unique(dat4.2$UniProt.Accessions)
+# dat4.2$status <- dat4.1$status[match(dat4.2$UniProt.Accessions, dat4.1$uniprot)] # no withdrawn
+UnDrug <- dat4.2[-as.vector(na.omit(match(unique(dat4.1$uniprot), dat4.2)))]
+#known epilepsy drug
+KnEDrug <- unique(dat4.1$uniprot)
+
+#5 brain specific proteins
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+dat5<-data.table::fread('2685tissue_category_rna_brain_Tissue.tsv', stringsAsFactors = F, data.table = F, fill = T)
+SP <- unique(dat5$Uniprot)
+
+#intersection
+DatALL <- list(
+  E_Dys=unique(E_Dys$pro),
+  # Module_pro=unique(Module_pro$pro),
+  # tsPro=unique(tsPro$pro),
+  UnDrug=UnDrug, #a: 1
+  # KnEDrug,  #b
+  SP=SP
+)
+ProInter <- Reduce(intersect, DatALL)
+
+#Summary
+#FL UnDrug："P0CG29" "P48050" "P54646" "Q13574" "Q15185" "Q16288" "Q32MZ4" "Q99572" "Q9UGC6" "Q9Y698"
+#   KnEDrug: "O14764"
+#PL UnDrug: "P54646" "Q15165" "Q15185" "Q5TCQ9"
+#TL UnDrug: "O60462" "P0CG29" "P54646" "Q15185" "Q6P2M8" "Q8N118" "Q9BQ69" "Q9NP58" "Q9UGC6"
+#   KnEDrug: "P34903"
+
+
+```
+```{r 6 regions}
+#1 dys-regulated proteins (>= 4 regions)
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis")
+dat1 <- read.csv(file="epilepsy_vs_health_wilcox_dysregulated_group.csv", row=1)
+colnames(dat1) <- gsub("_group", "", colnames(dat1))
+dat1[dat1=="No-Significant"] <- NA
+
+E_Dys <- dat1[apply(dat1, 1, function(x){sum(!is.na(x))>=4}), ]
+
+E_Dys <- data.frame(pro_iso=rownames(E_Dys))
+E_Dys$pro <- sapply(E_Dys$pro_iso,function(x){str_split(x,"-")[[1]][1]})  #1822  unique: 1800
+
+#2 merged module
+setwd("Z:/Project/HBA/epilepsy_re-libsearch_and_data_analysis20230703/combine_part1_part2/data analysis/WGCNA")
+load(file="datExpr_4411proteins_1017_samples_after_delet_outlier_samples.RData")
+load(file="4411pro_mergedColors_mergedModule.RData")
+
+dat2 <- data.frame(pro=colnames(datExpr), mergedModule=mergedModule)
+M12 <- data.frame(pro_iso=dat2$pro[which(dat2$mergedModule=="M1" | dat2$mergedModule=="M2" | dat2$mergedModule=="M7")])
+M12$pro <- sapply(M12$pro_iso,function(x){str_split(x,"-")[[1]][1]})
+
+#3 ts in FL
+# dat3<-data.table::fread('3_HBA_ts_9639pro_1521sam_Grey_BBA_3_2_2.5_20220921.csv', stringsAsFactors = F, data.table = F, fill = T)
+# rownames(dat3) <- dat3$V1
+# dat3 <- dat3[,-1]
+# setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+# info<-data.table::fread('FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv', stringsAsFactors = F, data.table = F, fill = T)
+# info$BBA_G<-paste0(info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions,seq="_",info$W_G)
+# dat3$BBA_G <- info$Lobe[match(rownames(dat3), info$BBA_G)]
+# dat3.1 <- dat3[which(dat3$BBA_G=="FrontalLobe"), ]
+# tsPro <- colnames(dat3.1)[apply(dat3.1, 2, function(x){sum(!is.na(x))>0})]
+
+#4 drug targets
+#unknown
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+dat4.1<-data.table::fread('4_1_Drugbank_list.csv', stringsAsFactors = F, data.table = F, fill = T)[, c("status","uniprot")]
+dat4.1 <- unique(dat4.1)
+dat4.1 <- dat4.1[dat4.1$status!="Withdrawn", ]
+dat4.2<-data.table::fread('4_2_all_human_drug_target_sep.csv', stringsAsFactors = F, data.table = F, fill = T)
+dat4.2 <- unique(dat4.2$UniProt.Accessions)
+# dat4.2$status <- dat4.1$status[match(dat4.2$UniProt.Accessions, dat4.1$uniprot)] # no withdrawn
+UnDrug <- dat4.2[-as.vector(na.omit(match(unique(dat4.1$uniprot), dat4.2)))]
+#known epilepsy drug
+KnEDrug <- unique(dat4.1$uniprot)
+
+#5 brain specific proteins
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+dat5<-data.table::fread('2685tissue_category_rna_brain_Tissue.tsv', stringsAsFactors = F, data.table = F, fill = T)
+SP <- unique(dat5$Uniprot)
+
+#intersection
+DatALL <- list(
+  E_UP=unique(E_Dys$pro),
+  M12=unique(M12$pro),
+  # tsPro=tsPro,
+  # UnDrug=UnDrug, #a
+  KnEDrug,  #b
+  SP=SP
+)
+ProInter <- Reduce(intersect, DatALL)
+
+#summary
+#UnDrug:
+#"O60333" "P03891" "P09936" "P10636" "P13637" "P17252" "P17658" "P22303" "P31152" "P43004" "P48066" "P60880"
+#"P68106" "P80192" "P98164" "Q08462" "Q13574" "Q14003" "Q14722" "Q16288" "Q86SK9" "Q8N5S9" "Q92854" "Q9BVA1"
+#"Q9P286" "Q9UGC6" "Q9UL51"
+# KnEDrug: "O75899" "Q00975"
+```
+
+#37 potential drug targets
+```{r chord diagram-Drugtarget}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures")
+Drugtarget <- data.table::fread('37_potential_drug_targets.csv',data.table = F)
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/WGCNA_analysis")
+pro2gene<-data.table::fread('gene2protein_reviewed_uniprot_seprow.csv', stringsAsFactors = F, data.table = F, fill = T)
+Drugtarget$GeneName<-pro2gene$Gene.Names[match(Drugtarget$uniprot,pro2gene$Entry)]
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/normal_epilepsy_t_test/drug targets")
+drug_info<-data.table::fread('4_2_all_human_drug_target_sep.csv', stringsAsFactors = F, data.table = F, fill = T)
+drug_info <- unique(drug_info[,c(3,10)])
+colnames(drug_info)[1] <- "uniprot"
+
+Drugtarget1 <- merge(Drugtarget, drug_info, by="uniprot")
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures")
+write.csv(Drugtarget1,"37_potential_drug_targets_type_geneName.csv")
+
+drugType<-unique(Drugtarget1$Type.1)
+
+group<-unique(Drugtarget1$group)
+
+matched_number<-NULL
+for(i in 1:length(group)){
+  d1<-Drugtarget1[which(Drugtarget1$group==group[i]),]
+  for(j in 1:length(drugType)){
+  d2<-d1[which(d1$Type.1==drugType[j]),]
+  matched_number0 <- data.frame(group=group[i], type=drugType[j], num=nrow(d2))
+  matched_number<-rbind(matched_number,matched_number0)
+  }
+}
+
+library(tidyverse)
+library(viridis)
+library(patchwork)
+# library(hrbrthemes)
+library(circlize)
+
+dataChord<-reshape2::dcast(matched_number, group~type, na.rm=T)
+dataChord<-data.frame(dataChord,row.names = "group")
+dataChord<-as.matrix(dataChord)
+
+grid.col <- data.frame(group=c(rownames(dataChord),colnames(dataChord)),                       color=c("#3E4097","#E76E61","#99B5DE","#ACD275",rep("#7D519E",6))) # "#D8B6D6"
+grid.col<-as.matrix(data.frame(grid.col,row.names = "group"))
+grid.col<-grid.col[,1]
+
+# parameters
+circos.clear()
+circos.par(start.degree = 90, gap.degree = 4, track.margin = c(-0.1, 0.1), points.overflow.warning = FALSE)
+par(mar = rep(0, 4))
+# Base plot
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/20230423_new_figures")
+pdf("ChordDiagram_figure_37_potential_drug_targets.pdf")
+chordDiagram(
+  dataChord, 
+  transparency = 0.25,
+  grid.col = grid.col,
+  # row.col = 1:9,
+  directional = 1,
+  direction.type = c("arrows", "diffHeight"),
+  diffHeight  = -0.05,
+  # annotationTrack = "grid", 
+  annotationTrackHeight = c(0.03, 0.05),
+  link.arr.type = "big.arrow",  
+  link.sort = TRUE,
+  link.largest.ontop = TRUE
+)
+```
+
+
+# the number of region-specific or region-enriched RNA or proteins
+```{r}
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Reactome/mRNA tissue grouped reactome pathway")
+Trans <- read.csv("HBA_Allen_ts_18415prot_2113sample_Gray_BBA_3_2_2.5_20221011.csv", row.names = 1)
+snum <- apply(Trans, 2, function(x){sum(x==5, na.rm=T)})
+sum(snum>0)  #502 region-specific RNA
+
+enum <- apply(Trans, 2, function(x){sum(x==4, na.rm=T)})
+sum(enum>0)  #5814 region-enriched RNA
+length(which(enum>0))
+
+setwd("D:/1_guomics_xyt/1Project/hba_research_workflow/9_DataAnalysis_20220901/Reactome")
+HW <- read.csv("HBA_ts_9639pro_1060sam_White_BBA_3_2_2.5_20220921.csv", row.names = 1)
+snum <- apply(HW, 2, function(x){sum(x==5, na.rm=T)})
+sum(snum>0)  #357 region-specific proteins (white matter)
+
+enum <- apply(HW, 2, function(x){sum(x==4, na.rm=T)})
+sum(enum>0)  #1575 region-enriched proteins (white matter)
+length(which(enum>0))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

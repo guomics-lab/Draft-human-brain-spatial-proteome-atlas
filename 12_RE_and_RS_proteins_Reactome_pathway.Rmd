@@ -1,0 +1,147 @@
+---
+title: "Reactome enrichment analysis in RE and RS proteins"
+author: "Yuting Xie"
+date: "2023-08-02"
+output: html_document
+---
+
+```{r}
+rm(list = ls())
+pacman::p_load(readxl, magrittr, clusterProfiler,
+               RColorBrewer,
+               Rtsne, umap,
+               pheatmap,vioplot,
+               ggpubr, ggplot2,
+               corrplot, stringr,reshape2, preprocessCore, data.table)
+
+# BiocManager::install("reactome.db")
+library(reactome.db)
+# BiocManager::install('ReactomePA',force = TRUE)
+library(ReactomePA)
+# packageVersion("ReactomePA")
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(forcats)
+```
+
+#The input gene ID should be Entrez gene ID. We recommend using [`clusterProfiler::bitr()`](#bitr) to convert biological IDs. 
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+info <- data.table::fread("FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv",data.table = F)
+
+info <- info[order(info$Order),]
+info1 <- data.frame(BBA=info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions, Lobe=info$Lobe, Gyrus=info$Gyrus)
+info2 <- unique(info1)
+info2 <- info2[-which(info2$BBA=="#N/A"),]
+
+info2$BBA <- paste0(info2$BBA, sep="_", "G")
+
+ts <- data.table::fread("HBA_ts_9639pro_1521sam_Grey_BBA_3_2_2.5_20220921.csv",data.table = F)
+ts <- data.frame(ts,row.names = "V1")
+
+ts <- ts[info2$BBA, ]
+colnames(ts) <- sapply(colnames(ts),function(x){str_split(x,"_")[[1]][1]}) 
+
+pathway <- NULL
+top10 <- NULL
+for(i in 1:nrow(ts)){
+  pro <- unique(colnames(ts)[!is.na(ts[i,])])
+  gene <- bitr(pro, fromType="UNIPROT", toType="ENTREZID", OrgDb="org.Hs.eg.db")[,2]
+  pathway1 <- enrichPathway(gene=gene, 
+                          organism = "human",
+                          pvalueCutoff = 0.05, 
+                          pAdjustMethod = "BH",
+                          qvalueCutoff = 0.2,
+                          readable=FALSE)
+  pathway2 <- pathway1@result
+  pathway2$BBA <- rownames(ts)[i]
+  pathway3 <- pathway2[1:10, ]
+  
+  top10 <- rbind(top10, pathway3)
+  pathway <- rbind(pathway, pathway2)
+}
+
+allpathway <- merge(pathway, info2, by="BBA", all=T)
+allpathway$GeneRatio1 <- as.numeric(sapply(allpathway$GeneRatio,function(x){str_split(x,"/")[[1]][1]}))/as.numeric(sapply(allpathway$GeneRatio,function(x){str_split(x,"/")[[1]][2]}))
+
+top10 <- merge(top10, info2, by="BBA", all=T)
+top10$GeneRatio1 <- as.numeric(sapply(top10$GeneRatio,function(x){str_split(x,"/")[[1]][1]}))/as.numeric(sapply(top10$GeneRatio,function(x){str_split(x,"/")[[1]][2]}))
+
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+write.csv(allpathway, "all_pathway_in_all_region.csv")
+write.csv(top10, "top10_pathway_in_all_region.csv")
+```
+
+#select proteins pathways: p value < 0.01 in top10 pathways
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+top10 <- read.csv("top10_pathway_in_all_region.csv")
+pathway <- top10[which(top10$pvalue<0.01), ] #252 pathways
+
+write.csv(pathway, "p_value_less_0.01_pathways_in_top10_pathways.csv")
+```
+
+#figures
+```{r}
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+pathway1 <- read.csv("p_value_less_0.01_pathways_in_top10_pathways.csv")
+pathway1 <- pathway1[, -c(1,2)]
+SP <- read.csv("pvalue_0.01_in_top10_select_pathways_for_Bubble_plot.csv", header = FALSE)
+
+info <- data.table::fread("FIleInfo_HBA_20220816_withoutFALSE_and_pool.csv",data.table = F)
+info <- info[order(info$Order),]
+info1 <- data.frame(BBA=info$BBA_Anatomical.and.modified.Cyto.architectonic.descriptions, Lobe=info$Lobe, Gyrus=info$Gyrus, Order=info$Order)
+info2 <- unique(info1)
+info2 <- info2[-which(info2$BBA=="#N/A"),]
+info2$BBA <- paste0(info2$BBA, sep="_", "G")
+info3 <- info2[match(unique(pathway1$BBA), info2$BBA), ]
+info3 <- info3[order(info3$Order), ]
+
+pathway2 <- pathway1
+pathway3 <- pathway2[,c(1,3,6)]
+
+pathway3 <- reshape2::dcast(pathway3, Description~BBA, value.var = "pvalue")
+
+pathway4 <- pathway3[match(SP$V1, pathway3$Description), ]
+pathway4 <- pathway4[!is.na(pathway4$Description), ]
+
+pathway4.1 <- reshape2::melt(pathway4, id="Description")
+colnames(pathway4.1) <- c("Description", "BBA", "pvalue")
+
+#Bubble_plot
+pathway4.1 <- merge(pathway4.1, info3, by="BBA", all=T)
+pathway4.1 <- pathway4.1[order(pathway4.1$Order),]
+pathway4.1$BBA <- as.character(pathway4.1$BBA)
+pathway4.1$BBA <- sapply(pathway4.1$BBA, function(x){str_sub(x, 1, nchar(x)-2)})
+pathway4.1 <- na.omit(pathway4.1)
+pathway4.1$BBA <- fct_inorder(as.factor(pathway4.1$BBA))
+
+pathway4.2 <- pathway4
+rownames(pathway4.2) <- pathway4.2$Description
+pathway4.2 <- pathway4.2[,-1]
+pathway4.2[is.na(pathway4.2)] <- 0
+pathway4.clust<-hclust(dist(pathway4.2))
+
+library("ggtree")
+p2 <- ggtree(pathway4.clust)+
+    geom_tiplab()
+
+p1 <- ggplot(pathway4.1, aes(x=BBA, y=Description)) +
+  geom_point(aes(size = -log10(pvalue), color=Lobe))+theme_bw()+ #GeneRatio1
+  theme(axis.text.x=element_text(angle=90, hjust = 1, vjust=0.5, size=5),
+        axis.text.y=element_text(size=5))+
+  labs(x=NULL,y=NULL, title="p.value_0.01_in_top10_selet_pathways")+guides(size=guide_legend(order=1))+
+  scale_color_manual(values=c("Cerebellum"= "#eb7369", "FrontalLobe" = "#c5920e", "LimbicLobe" = "#2eb064" , "OccipitalLobe" = "#1cb4b8", "ParietalLobe" = "#359cd8", "SubcorticalNuclei" = "#a07db7", "TemporalLobe" = "#d469a4", "InsularLobe"="#76A12F"))
+
+# remotes::install_github("YuLab-SMU/aplot",force = TRUE)
+library(aplot)
+p1%>%
+  insert_right(p2, width = 0.1)
+
+setwd("Z:/Project/HBA/data_and_code_20230726/2_RE_RS_pathway_enrichment/Proteins")
+ggsave("pavalue_0.01_in_top10_pathway_121BBA_Lobe_52pathway_theme_bw_pvalue.pdf", width=16, height=10)
+```
+
+
+
+
